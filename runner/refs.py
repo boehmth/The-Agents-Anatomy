@@ -15,6 +15,22 @@ def _lookup(idx: int, path: str, results: List[Any]) -> Any:
     if idx < 0 or idx >= len(results):
         return f"__ref_error__:index {idx} out of range"
     node: Any = results[idx]
+    # Versuche zuerst den exakten Index. Schlägt der Pfad fehl (z. B. weil
+    # das Modell einen 1-basierten Index statt 0-basiert verwendet hat),
+    # suchen wir rückwärts nach dem nächstgelegenen Element, das den Pfad
+    # auflösen kann. Das macht den Agenten robust gegen Indexierungsfehler.
+    exact = _walk(node, path)
+    if not isinstance(exact, str) or not exact.startswith("__ref_error__"):
+        return exact
+    for i in range(idx - 1, -1, -1):
+        candidate = _walk(results[i], path)
+        if not isinstance(candidate, str) or not candidate.startswith("__ref_error__"):
+            return candidate
+    return exact
+
+
+def _walk(node: Any, path: str) -> Any:
+    """Löst einen Punkt-Pfad auf einem einzelnen Element auf."""
     for key in path.split("."):
         if isinstance(node, dict) and key in node:
             node = node[key]
@@ -40,13 +56,14 @@ def resolve_ref(value: Any, results: List[Any]) -> Any:
         return value
 
     def _sub(m):
+        ref = m.group(0)  # z. B. "$results[3].latest.close"
         val = _lookup(int(m.group(1)), m.group(2), results)
         if isinstance(val, (int, float)):
             return str(val)
         if isinstance(val, str):
             return val
         # dict/list in einem String zu inlinen ist nicht sinnvoll
-        return f"__ref_error__:cannot inline non-scalar"
+        return f"__ref_error__:{ref}: cannot inline non-scalar"
 
     return _REF_RE.sub(_sub, value)
 

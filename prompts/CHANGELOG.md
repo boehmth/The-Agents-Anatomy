@@ -109,6 +109,91 @@ damit `runner/loop.py` und der Systemprompt didaktisch verständlich werden.
 
 ---
 
+## DeepSeek als LLM-Provider (2026-08-04)
+
+**Änderungen**:
+
+1. **Neuer Provider `model/deepseek.py`**: DeepSeek nutzt eine
+   OpenAI-kompatible Chat-Completions-API. Der Provider verwendet daher das
+   `openai`-SDK, aber mit eigener Base-URL (`https://api.deepseek.com`) und
+   eigenen Env-Variablen (`DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
+   `DEEPSEEK_BASE_URL`, `DEEPSEEK_TEMPERATURE`, `DEEPSEEK_MAX_OUTPUT_TOKENS`).
+2. **Dispatcher erweitert** (`model/__init__.py`): `LLM_PROVIDER=deepseek`
+   wird unterstützt; `set_model()` setzt dann `DEEPSEEK_MODEL`.
+3. **`.env.example` und README** um die DeepSeek-Konfiguration ergänzt.
+
+---
+
+## v1 — $results-Indexierung korrigiert (2026-08-04)
+
+**Problem**: Das Modell referenzierte in Step 5 fälschlich `$results[3]`
+statt `$results[2]` für die MSFT-Differenz. Ursache: Der ARBEITSPLAN
+nummerierte die Steps 1-basiert („Step 1: portfolio.load", „Step 2:
+get_prices NVDA", …), während `$results[<index>]` 0-basiert ist. Das Modell
+übernahm die 1-basierte Step-Nummer direkt als Index → `$results[3]` zeigte
+auf das erste calculator-Ergebnis (ohne `latest`/`prices`) → Fehler
+„operands must be numeric strings".
+
+**Änderungen**:
+
+1. **`prompts/v1/system_prompt.txt`**: ARBEITSPLAN auf 0-basierte
+   Step-Nummern umgestellt (Step 0–5) und eine explizite Index-Tabelle
+   ergänzt (`$results[0]` = portfolio.load, `$results[1]` = get_prices NVDA,
+   `$results[2]` = get_prices MSFT, …). Alle Beispiele und Referenzen
+   (Kauf/Verkauf, holdings) auf die korrekte 0-basierte Indexierung
+   angepasst.
+2. **`runner/refs.py`**: Fehlermeldungen bei fehlgeschlagenen Referenzen
+   enthalten jetzt die ursprüngliche Referenz (z. B. `$results[3].latest.close`).
+3. **`tools/calculator.py`**: Bei einer fehlgeschlagenen `$results`-Referenz
+   gibt der calculator eine verständliche Fehlermeldung mit Hinweis auf die
+   korrekte Indexierung („get_prices-Ergebnisse sind die Indizes 1 und 2").
+
+---
+
+## v1 — $results-Resolver robust gegen Indexierungsfehler (2026-08-04)
+
+**Problem**: Trotz korrigierter Prompt-Indexierung referenzierte das Modell
+weiterhin gelegentlich falsche `$results`-Indizes (z. B. `$results[3]` statt
+`$results[2]` für MSFT), was zu „operand ist keine gültige $results-Referenz"
+im calculator führte.
+
+**Änderungen**:
+
+1. **`runner/refs.py`**: Der Resolver versucht bei einem fehlgeschlagenen
+   Lookup automatisch, den Index zu korrigieren: Er sucht rückwärts durch
+   `results` nach dem nächstgelegenen Element, das den Pfad auflösen kann.
+   Damit behebt er den typischen 1-basiert-statt-0-basiert-Fehler des Modells
+   automatisch (z. B. `$results[3].latest.close` → findet MSFT bei Index 2).
+2. **`prompts/v1/system_prompt.txt`**: ARBEITSPLAN wieder auf 0-basierte
+   Step-Nummern (Step 0–4) korrigiert, inkl. expliziter Index-Tabelle.
+   Die vom Nutzer ergänzten `analysis`/`decision`-Felder bleiben erhalten.
+
+**Kompatibilität**: Der Runner parst den Plan mit `plan.get("steps")` und
+ignoriert zusätzliche Top-Level-Felder wie `analysis`/`decision` — es läuft
+keine strikte Schema-Validierung. Diese Felder sind also unbedenklich.
+
+---
+
+## Runner — Ausgabe bei Fehlern didaktisch verbessert (2026-08-04)
+
+**Problem**: Bei einem fehlgeschlagenen Step (z. B. `portfolio sell` mit
+`shares and price must be > 0`) zeigte die Ausgabe nur den Fehler, aber
+nicht, was der Agent eigentlich vorhatte und welche Argumente er übergeben
+hat. Das erschwerte das Verständnis der Fehlerursache.
+
+**Änderungen** (`runner/loop.py`):
+
+1. **Intention anzeigen**: Die Step-Zeile zeigt jetzt das `description`-Feld
+   des Plans (z. B. `Step 5: portfolio sell // NVDA verkaufen, da
+   5-Tage-Differenz negativ`).
+2. **Aufgelöste Argumente bei Fehlern**: Bei einem Fehler wird zusätzlich
+   die Zeile `versucht: {...}` mit den aufgelösten Argumenten ausgegeben
+   (z. B. `versucht: {'operation': 'sell', 'operand1': 'NVDA',
+   'operand2': '0@0'}`). Damit ist sofort sichtbar, dass der Agent `0@0`
+   statt einer gültigen `$results`-Referenz übergeben hat.
+
+---
+
 ## v1 — Baseline (2026-07-15) [historisch, ersetzt]
 
 **Inhalt**: Der Zustand nach dem Refactoring auf `prompts/`, `runner/`, `model/`,

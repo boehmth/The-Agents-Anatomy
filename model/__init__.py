@@ -3,11 +3,12 @@
 # Wähle den Provider über die .env:
 #   LLM_PROVIDER=gemini   (Default; nutzt model/gemini.py, braucht GOOGLE_API_KEY)
 #   LLM_PROVIDER=openai   (nutzt model/openai.py, braucht OPENAI_API_KEY)
+#   LLM_PROVIDER=deepseek (nutzt model/deepseek.py, braucht DEEPSEEK_API_KEY)
 #   LLM_PROVIDER=sap      (nutzt model/sap.py, braucht SAP GenAI Hub Service Key)
 #
 # Das Modell kann per .env-Variable (GEMINI_MODEL / OPENAI_MODEL /
-# SAP_GENAI_MODEL) gesetzt oder zur Laufzeit per set_model(...) überschrieben
-# werden.
+# DEEPSEEK_MODEL / SAP_GENAI_MODEL) gesetzt oder zur Laufzeit per
+# set_model(...) überschrieben werden.
 
 import os
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ def set_provider(name: str) -> None:
 
 
 def get_provider() -> str:
-    """Aktueller Provider ('gemini', 'openai' oder 'sap')."""
+    """Aktueller Provider ('gemini', 'openai', 'deepseek' oder 'sap')."""
     return _PROVIDER
 
 
@@ -35,6 +36,7 @@ def set_model(model_name: str) -> None:
     Funktion setzt nur die passende Modell-Env-Variable des aktiven Providers:
       - gemini -> GEMINI_MODEL
       - openai -> OPENAI_MODEL
+      - deepseek -> DEEPSEEK_MODEL
       - sap    -> SAP_GENAI_MODEL
 
     Die Provider lesen das Modell zur Laufzeit aus der Env-Variable (bzw.
@@ -48,6 +50,8 @@ def set_model(model_name: str) -> None:
         os.environ["GEMINI_MODEL"] = m if m.startswith("models/") else f"models/{m}"
     elif _PROVIDER == "openai":
         os.environ["OPENAI_MODEL"] = m
+    elif _PROVIDER == "deepseek":
+        os.environ["DEEPSEEK_MODEL"] = m
     else:  # sap
         os.environ["SAP_GENAI_MODEL"] = m
 
@@ -59,9 +63,11 @@ def call_llm(system_prompt: str, user_prompt: str) -> dict:
         from .gemini import call_llm as _call
     elif _PROVIDER == "openai":
         from .openai import call_llm as _call
+    elif _PROVIDER == "deepseek":
+        from .deepseek import call_llm as _call
     else:
         raise RuntimeError(
             f"Unbekannter LLM_PROVIDER '{_PROVIDER}'. "
-            "Erlaubt: 'gemini', 'openai' oder 'sap'."
+            "Erlaubt: 'gemini', 'openai', 'deepseek' oder 'sap'."
         )
     return _call(system_prompt, user_prompt)

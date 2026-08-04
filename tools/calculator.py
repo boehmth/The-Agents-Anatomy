@@ -17,10 +17,22 @@ class CalculatorTool(AgentTool):
 
     def run(self, args: Dict[str, Any]) -> Dict[str, Any]:
         op = args.get("operation")
+        a_raw = args.get("operand1")
+        b_raw = args.get("operand2")
         try:
-            a = float(args.get("operand1"))
-            b = float(args.get("operand2"))
+            a = float(a_raw)
+            b = float(b_raw)
         except Exception:
+            bad = [x for x in (a_raw, b_raw)
+                   if not isinstance(x, str) or "__ref_error__" in x]
+            if bad:
+                return {
+                    "error": (
+                        "operand ist keine gültige $results-Referenz "
+                        f"({bad[0]}). Prüfe den Index: get_prices-Ergebnisse "
+                        "sind die Indizes 1 und 2 im Beispiel-Plan."
+                    )
+                }
             return {"error": "operands must be numeric strings"}
 
         if op == "add":

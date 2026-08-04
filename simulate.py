@@ -59,6 +59,8 @@ def _active_model_name(cli_model: Optional[str]) -> str:
         return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     if provider == "gemini":
         return os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     return os.getenv("SAP_GENAI_MODEL", "<from env>")
 
 

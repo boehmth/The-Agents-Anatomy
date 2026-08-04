@@ -24,7 +24,7 @@ The-Agents-Anatomy/
 │   ├── CHANGELOG.md
 │
 ├── runner/                 # Orchestrator (Iterations-Loop, $results-Resolver)
-├── model/                  # LLM-Provider (Gemini, OpenAI, SAP GenAI Hub)
+├── model/                  # LLM-Provider (Gemini, OpenAI, DeepSeek, SAP GenAI Hub)
 ├── tools/                  # get_prices, calculator, portfolio
 ├── clock.py                # simuliertes "heute"
 ├── price_cache.py          # yfinance-Vorab-Cache
@@ -134,7 +134,7 @@ pip install -r requirements.txt
 Kopiere `.env.example` und fülle die Werte aus. Wichtigste Variablen:
 
 ```
-LLM_PROVIDER=sap              # oder "gemini" / "openai"
+LLM_PROVIDER=sap              # oder "gemini" / "openai" / "deepseek"
 PROMPT_VERSION=v1
 TICKERS=NVDA,MSFT
 
@@ -149,6 +149,10 @@ GOOGLE_API_KEY=...
 # Für OpenAI:
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4o-mini
+
+# Für DeepSeek (OpenAI-kompatible API):
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
 ### 3. Service-Key hinterlegen
