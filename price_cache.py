@@ -38,8 +38,15 @@ def preload(tickers: List[str],
             print(f"[price_cache] WARN: no data for {t}")
             _CACHE[t] = pd.DataFrame(columns=["Close"])
             continue
-        # Nur Close behalten und tz-normalisieren
+        # Nur Close behalten, fehlende Werte entfernen und tz-normalisieren.
+        # yfinance kann für einzelne Tage NaN liefern; das darf später nicht
+        # zu NaN in simulation_equity.csv / summary.json führen.
         df = df[["Close"]].copy()
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            print(f"[price_cache] WARN: only NaN close data for {t}")
+            _CACHE[t] = pd.DataFrame(columns=["Close"])
+            continue
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         _CACHE[t] = df
 

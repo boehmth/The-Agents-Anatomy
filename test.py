@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 from tools import TOOLS, TICKERS
 from runner import resolve_ref, resolve_args
-from model import call_llm, PROVIDER
+from model import call_llm, get_provider
 
 load_dotenv()
 
@@ -84,7 +84,7 @@ def test_ref_resolution():
 
 
 def test_llm():
-    print(f"\n=== LLM (provider={PROVIDER}) ===")
+    print(f"\n=== LLM (provider={get_provider()}) ===")
     print("  ", call_llm("Antworte als reines JSON.",
                         "Gib ein JSON mit Feld 'ok' und Wert true zurück."))
 

@@ -20,7 +20,6 @@ def _get_client() -> Client:
     return _client
 
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
 MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4096"))
 
 
@@ -49,6 +48,7 @@ def _extract_json(text: str) -> dict:
 
 
 def call_llm(system_prompt: str, user_prompt: str) -> dict:
+    model = os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
     prompt = f"""
 SYSTEM:
 {system_prompt}
@@ -61,7 +61,7 @@ Antworte ausschließlich als reines JSON-Objekt. Kein Markdown, kein Fließtext.
 """
 
     response = _get_client().models.generate_content(
-        model=MODEL_NAME,
+        model=model,
         contents=prompt,
         config=GenerateContentConfig(
             response_mime_type="application/json",

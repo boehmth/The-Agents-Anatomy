@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import shutil
 from datetime import date, timedelta
@@ -17,7 +18,7 @@ import price_cache
 import tools.portfolio as _pf_mod
 from tools import TICKERS
 from runner import run_agent
-from model import set_model
+from model import get_provider, set_model
 
 
 INITIAL_CASH = 10_000.0
@@ -39,11 +40,26 @@ def _rm(path: str) -> None:
 def _reset_state() -> None:
     _rm(_pf_mod.PORTFOLIO_FILE)
     _rm(_pf_mod.TRADES_FILE)
+    _rm(os.path.join(os.getenv("DATA_DIR", "data"), "agent_log.jsonl"))
 
 
 def _last_close(ticker: str, as_of: date) -> float:
     prices = price_cache.get_prices_up_to(ticker, as_of, 1)
-    return prices[-1]["close"] if prices else 0.0
+    if not prices:
+        return 0.0
+    close = float(prices[-1]["close"])
+    return close if math.isfinite(close) else 0.0
+
+
+def _active_model_name(cli_model: Optional[str]) -> str:
+    if cli_model:
+        return cli_model
+    provider = get_provider()
+    if provider == "openai":
+        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    if provider == "gemini":
+        return os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
+    return os.getenv("SAP_GENAI_MODEL", "<from env>")
 
 
 def _portfolio_value(as_of: date) -> Dict[str, Any]:
@@ -118,15 +134,17 @@ def run_simulation(days: int = 5,
         os.environ["PROMPT_VERSION"] = prompt_version
 
     _pf_mod.set_data_dir(data_dir)
+    os.environ["DATA_DIR"] = data_dir
     os.makedirs(data_dir, exist_ok=True)
 
     end_d = date.fromisoformat(end) if end else date.today()
     start_d = date.fromisoformat(start) if start else end_d - timedelta(days=days * 2)
 
-    active_model = model or os.getenv("SAP_GENAI_MODEL", "<from env>")
+    active_model = _active_model_name(model)
     active_prompt = prompt_version or os.getenv("PROMPT_VERSION", "v1")
 
     print(f"[simulate] Zeitraum : {start_d} .. {end_d}")
+    print(f"[simulate] Provider : {get_provider()}")
     print(f"[simulate] Modell   : {active_model}")
     print(f"[simulate] Prompts  : {active_prompt}")
     print(f"[simulate] Output   : {data_dir}")
@@ -140,7 +158,23 @@ def run_simulation(days: int = 5,
     if days:
         trading_days = trading_days[-days:]
     if not trading_days:
-        return {"error": "no trading days"}
+        summary = {
+            "error": "no trading days",
+            "hint": "Wähle ggf. ein historisches --end-Datum, für das Kursdaten existieren.",
+            "model": active_model,
+            "provider": get_provider(),
+            "prompt_version": active_prompt,
+            "tickers": TICKERS,
+            "requested_start_date": start_d.isoformat(),
+            "requested_end_date": end_d.isoformat(),
+        }
+        summary_path = os.path.join(data_dir, "summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        print("[simulate] FEHLER: keine Handelstage im gewählten Zeitraum gefunden.")
+        print("[simulate] Tipp  : Nutze z. B. --end 2025-11-14 für historische Daten.")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return summary
 
     print(f"[simulate] {len(trading_days)} Handelstage: "
           f"{trading_days[0]} .. {trading_days[-1]}")
@@ -181,6 +215,7 @@ def run_simulation(days: int = 5,
 
     summary: Dict[str, Any] = {
         "model": active_model,
+        "provider": get_provider(),
         "prompt_version": active_prompt,
         "tickers": TICKERS,
         "days": len(trading_days),

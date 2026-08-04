@@ -17,7 +17,7 @@ import requests
 # Konfiguration
 # ---------------------------------------------------------
 def _load_service_key() -> Dict[str, Any]:
-    path = os.getenv("SAP_GENAI_SERVICE_KEY_FILE", "./sap_service_key.json")
+    path = os.getenv("SAP_GENAI_SERVICE_KEY_FILE", "./.sap_service_key.json")
     if not os.path.exists(path):
         raise RuntimeError(
             f"SAP GenAI Hub: Service-Key-Datei nicht gefunden: {path}. "

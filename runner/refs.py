@@ -2,17 +2,13 @@
 #
 # Wenn der LLM in einem Step-Argument eine Referenz auf ein früheres Ergebnis
 # einfügt (Format: "$results[<index>].<key>[.<subkey>...]"), löst diese Datei
-# den Wert vor dem Tool-Call auf.
+# den Wert vor dem Tool-Call auf. Beispiel: "12@$results[1].latest.close".
 
 import re
 from typing import Any, Dict, List
 
-# Vollständige Referenz: der ganze String ist ein Ref, z. B. "$results[0].cash".
-_REF_FULL_RE = re.compile(r"^\$results\[(\d+)\]\.([A-Za-z0-9_\.\-]+)$")
-# Eingebettete Referenz: findet $results[i].path in einem längeren String
-# wie "12@$results[1].latest.close" oder "shares=12@$results[3].result".
-# Der Pfad matcht Buchstaben/Ziffern/Unterstrich/Punkt/Minus.
-_REF_EMBED_RE = re.compile(r"\$results\[(\d+)\]\.([A-Za-z0-9_\.\-]+)")
+# Findet $results[i].path in einem String (auch eingebettet, z. B. "12@$results[1].latest.close").
+_REF_RE = re.compile(r"\$results\[(\d+)\]\.([A-Za-z0-9_\.\-]+)")
 
 
 def _lookup(idx: int, path: str, results: List[Any]) -> Any:
@@ -34,27 +30,15 @@ def _lookup(idx: int, path: str, results: List[Any]) -> Any:
 
 
 def resolve_ref(value: Any, results: List[Any]) -> Any:
-    """Löst Referenzen der Form $results[i].key.subkey auf.
+    """Ersetzt jede $results[i].key-Referenz durch ihren Wert (als Text).
 
-    Zwei Modi:
-      1) Voll-Match: der ganze String ist eine Referenz -> gib den Wert zurück
-         (als String, falls numerisch, sonst das Objekt selbst).
-      2) Eingebettet: der String enthält eine Referenz als Teil-Ausdruck
-         (z. B. '12@$results[1].latest.close') -> ersetze die Referenz
-         durch ihren Wert als Text; der Rest bleibt.
+    Nicht-Strings bleiben unverändert. Skalare (Zahlen) werden als String
+    eingesetzt, damit sie in Tool-Argumenten wie "12@$results[1].latest.close"
+    funktionieren.
     """
     if not isinstance(value, str):
         return value
 
-    s = value.strip()
-
-    # 1) Voll-Match
-    m_full = _REF_FULL_RE.match(s)
-    if m_full:
-        val = _lookup(int(m_full.group(1)), m_full.group(2), results)
-        return str(val) if isinstance(val, (int, float)) else val
-
-    # 2) Eingebettete Substitutionen
     def _sub(m):
         val = _lookup(int(m.group(1)), m.group(2), results)
         if isinstance(val, (int, float)):
@@ -64,8 +48,7 @@ def resolve_ref(value: Any, results: List[Any]) -> Any:
         # dict/list in einem String zu inlinen ist nicht sinnvoll
         return f"__ref_error__:cannot inline non-scalar"
 
-    substituted = _REF_EMBED_RE.sub(_sub, value)
-    return substituted
+    return _REF_RE.sub(_sub, value)
 
 
 def resolve_args(args: Dict[str, Any], results: List[Any]) -> Dict[str, Any]:

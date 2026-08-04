@@ -49,7 +49,7 @@ def plot_simulation(equity_path: str = "data/simulation_equity.csv",
                 linewidth=1, linestyle="--", color="tab:orange")
 
     ax_top.set_ylabel("Wert")
-    ax_top.set_title("AgentTrader – Simulationsergebnis")
+    ax_top.set_title("The Agents Anatomy – Simulationsergebnis")
     ax_top.grid(True, alpha=0.3)
 
     # Buy/Sell-Marker (und set_cash separat als Info-Marker)

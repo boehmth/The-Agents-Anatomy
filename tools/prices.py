@@ -13,8 +13,8 @@ from .base import AgentTool
 
 # Bekannte Ticker (kanonische Liste).
 # Kann per .env-Variable TICKERS überschrieben werden:
-#     TICKERS=NVDA,MSFT,JPM,KO,JNJ,XOM,WMT,DIS
-_DEFAULT_TICKERS = ["NVDA", "MSFT", "SAP", "AMZN"]
+#     TICKERS=NVDA,MSFT
+_DEFAULT_TICKERS = ["NVDA", "MSFT"]
 _env = (os.getenv("TICKERS") or "").strip()
 if _env:
     TICKERS = [t.strip().upper() for t in _env.split(",") if t.strip()]
@@ -30,7 +30,7 @@ class PriceTool(AgentTool):
     )
     parameters = {
         "operation": "must be 'get'",
-        "operand1": "ticker (NVDA | MSFT | SAP | AMZN)",
+        "operand1": "ticker (NVDA | MSFT)",
         "operand2": "number of days of history as string (default '1', max '365')",
     }
     returns = (

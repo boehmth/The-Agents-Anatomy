@@ -1,4 +1,4 @@
-# AgentTrader
+# The Agents Anatomy
 
 Ein didaktischer, LLM-basierter Trading-Agent, der einmal pro Tag Kurse
 analysiert und über den Kauf/Verkauf von Aktien entscheidet.
@@ -12,7 +12,7 @@ analysiert und über den Kauf/Verkauf von Aktien entscheidet.
 ## Architektur
 
 ```
-AgentTrader/
+The-Agents-Anatomy/
 ├── agent.py                # CLI: ein einzelner Agent-Lauf
 ├── simulate.py             # CLI + Library: N-Tage-Simulation
 ├── benchmark.py            # Fährt mehrere Modelle gegeneinander
@@ -20,11 +20,11 @@ AgentTrader/
 ├── plot.py                 # Equity-Kurve + Trade-Marker
 │
 ├── prompts/                # ← reine Texte (Prompt-Versionen)
-│   ├── v1/  v2/  ...  v6/
+│   ├── v1/
 │   ├── CHANGELOG.md
 │
 ├── runner/                 # Orchestrator (Iterations-Loop, $results-Resolver)
-├── model/                  # LLM-Provider (Gemini, SAP GenAI Hub)
+├── model/                  # LLM-Provider (Gemini, OpenAI, SAP GenAI Hub)
 ├── tools/                  # get_prices, calculator, portfolio
 ├── clock.py                # simuliertes "heute"
 ├── price_cache.py          # yfinance-Vorab-Cache
@@ -32,11 +32,94 @@ AgentTrader/
 └── .github/workflows/      # GitHub Actions: täglicher Benchmark
 ```
 
-Die drei Ebenen des Agents sind **sauber getrennt**:
+Die Ebenen des Agents sind **sauber getrennt**:
 - **Texte** (`prompts/`) → beschreiben *was* der Agent tun soll.
 - **Runner** (`runner/`) → führt die vom Modell gelieferten Steps aus.
-- **Model** (`model/`) → tauschbar (Gemini / SAP GenAI Hub / …).
+- **Model** (`model/`) → tauschbar (Gemini / OpenAI / SAP GenAI Hub / …).
 - **Tools** (`tools/`) → was der Agent in der Welt tun kann.
+
+---
+
+## Wie der Agent arbeitet (Blockdiagramm)
+
+Der Agent ist bewusst einfach gehalten: Er besteht aus **genau zwei Teilen** —
+`call_llm()` (Plan holen) und `process_steps()` (Steps ausführen).
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │              SYSTEM-PROMPT                  │
+                    │  (prompts/<version>/system_prompt.txt)      │
+                    │  + Tool-Beschreibungen (tool_descriptions)  │
+                    └───────────────────┬─────────────────────────┘
+                                        │
+                    ┌───────────────────▼─────────────────────────┐
+                    │  1. call_llm() → JSON-Plan                 │
+                    │     { "steps": [...], "done": true|false }  │
+                    └───────────────────┬─────────────────────────┘
+                                        │
+                    ┌───────────────────▼─────────────────────────┐
+                    │  2. process_steps() → Steps ausführen      │
+                    │     get_prices / calculator / portfolio     │
+                    └───────────────────┬─────────────────────────┘
+                                        │
+                    ┌───────────────────▼─────────────────────────┐
+                    │  Ergebnisse in `results` merken             │
+                    │  ($results[i].key-Referenzen)               │
+                    └─────────────────────────────────────────────┘
+```
+
+**Die zwei Teile im Detail:**
+
+1. **call_llm()** — Das Modell erhält das Tagesziel (mit Datum) und liefert
+   einen JSON-Plan mit `steps` (Tool-Aufrufe) und `done` (fertig ja/nein).
+2. **process_steps()** — Der Runner führt jeden Step der Reihe nach aus.
+   Jedes Ergebnis landet in `results`. Ein späterer Step kann per
+   `$results[i].key` auf ein früheres Ergebnis zugreifen, statt den Step zu
+   wiederholen. Die Tools greifen auf `clock.today()` zu, damit alles am
+   simulierten "heute" stattfindet.
+
+### Beispiel: Ein konkreter Plan
+
+So könnte der Agent an einem Tag antworten — ein einziger Plan mit allen
+Schritten (Bestandsaufnahme → Analyse → Micro-Trade). In v1 handelt der Agent
+bewusst klein: **maximal 1 Aktie pro Tag**.
+
+```json
+{
+  "steps": [
+    { "tool": "portfolio", "args": { "operation": "load", "operand1": "", "operand2": "" },
+      "description": "Aktuellen Cash- und Holdings-Stand laden" },
+    { "tool": "get_prices", "args": { "operation": "get", "operand1": "NVDA", "operand2": "20" },
+      "description": "NVDA-Historie für die 5-Tage-Rendite" },
+    { "tool": "get_prices", "args": { "operation": "get", "operand1": "MSFT", "operand2": "20" },
+      "description": "MSFT-Historie für die 5-Tage-Rendite" },
+    { "tool": "calculator",
+      "args": { "operation": "subtract",
+                "operand1": "$results[1].latest.close",
+                "operand2": "$results[1].prices.15.close" },
+      "description": "NVDA 5-Tage-Differenz" },
+    { "tool": "calculator",
+      "args": { "operation": "subtract",
+                "operand1": "$results[2].latest.close",
+                "operand2": "$results[2].prices.15.close" },
+      "description": "MSFT 5-Tage-Differenz" },
+    { "tool": "portfolio",
+      "args": { "operation": "buy", "operand1": "NVDA",
+                "operand2": "1@$results[1].latest.close" },
+      "description": "Portfolio ist leer; NVDA ist stärker; 1 NVDA kaufen" }
+  ],
+  "done": true
+}
+```
+
+Die Steps werden der Reihe nach ausgeführt. `$results[1]` verweist auf das
+Ergebnis von Step 1 (get_prices NVDA), `$results[2]` auf Step 2 (get_prices
+MSFT) — so nutzt der Agent die frisch geladenen Kurse, ohne sie als Zahlen
+zu kodieren.
+
+> **Didaktischer Kern:** Der Agent "denkt" nicht in freiem Text, sondern in
+> **strukturierten Tool-Aufrufen**. Die Qualität hängt fast nur davon ab, wie
+> gut der Prompt diese Schritte beschreibt — nicht vom Code.
 
 ---
 
@@ -51,17 +134,21 @@ pip install -r requirements.txt
 Kopiere `.env.example` und fülle die Werte aus. Wichtigste Variablen:
 
 ```
-LLM_PROVIDER=sap              # oder "gemini"
-PROMPT_VERSION=v6
-TICKERS=NVDA,MSFT,JPM,KO,JNJ,XOM,WMT,DIS
+LLM_PROVIDER=sap              # oder "gemini" / "openai"
+PROMPT_VERSION=v1
+TICKERS=NVDA,MSFT
 
 # Für SAP GenAI Hub:
 SAP_GENAI_SERVICE_KEY_FILE=./.sap_service_key.json
 SAP_GENAI_MODEL=anthropic--claude-4.7-opus
 SAP_GENAI_RESOURCE_GROUP=default
 
-# Für Gemini (Fallback):
+# Für Gemini:
 GOOGLE_API_KEY=...
+
+# Für OpenAI:
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4o-mini
 ```
 
 ### 3. Service-Key hinterlegen
@@ -74,7 +161,7 @@ Für den SAP GenAI Hub die JSON-Datei mit dem Service-Key als
 
 ```bash
 python agent.py
-python agent.py --model gpt-4o --prompt-version v6
+python agent.py --model gpt-4o --prompt-version v1
 python agent.py --as-of 2025-11-14
 ```
 
@@ -82,12 +169,14 @@ python agent.py --as-of 2025-11-14
 
 ```bash
 python simulate.py --days 5
-python simulate.py --days 15 --model anthropic--claude-4.7-opus --prompt-version v6
+python simulate.py --days 15 --model gpt-5.6 --prompt-version v1
 ```
 
 Output in `data/`:
 - `portfolio.csv` — Cash- und Holdings-Verlauf.
 - `trades.csv` — Trade-Log (Kauf/Verkauf mit Preis).
+- `agent_log.jsonl` — pro Tag: Modell-Plan und Tool-Ergebnisse
+  (didaktisch hilfreich zum Nachvollziehen des Loops).
 - `simulation_equity.csv` — täglicher Kontostand.
 - `simulation.png` — Equity-Kurve mit Buy/Sell-Markern.
 - `summary.json` — kompakte Zusammenfassung (P&L, Trades, Audit).
@@ -99,7 +188,7 @@ python benchmark.py --days 5
 # oder mit expliziter Modellliste:
 python benchmark.py --days 5 \
     --models gpt-4o-mini,gpt-4o,anthropic--claude-4.7-opus \
-    --prompt-version v6
+    --prompt-version v1
 ```
 
 Output pro Lauf:
@@ -124,6 +213,7 @@ python report.py
 Baut aus `data/leaderboard.csv` eine `docs/index.html`. Zeigt:
 - Letzten Lauf (Rangliste heute)
 - Aggregat (Ø P&L, Best/Worst, Trades pro Modell)
+- **Trade-Historie** (was wurde wann gekauft/verkauft, aus `data/runs/`)
 - Zeitreihe des P&L pro Modell
 
 ## Täglicher GitHub-Benchmark
@@ -151,16 +241,16 @@ und tut:
 Der Agent liest aus `prompts/<PROMPT_VERSION>/`. Wechseln über `.env` oder
 CLI-Argument `--prompt-version`.
 
-Die Iteration ist in `prompts/CHANGELOG.md` dokumentiert. Kurzer Überblick:
+Aktuell gibt es **eine** Version (`v1`), die zum Single-Shot-Runner passt:
 
-| Version | Fokus | Ergebnis (v4.7 Opus, 5 Tage) |
-|---------|-------|--------------|
-| v1 | Baseline, generisches Ziel | −2.01 % (15 Tage) |
-| v2 | Feste Regeln R1–R8 (zu viele Steps) | zu langsam |
-| v3 | Kompakter Arbeitsplan | 0 Trades |
-| v4 | „results ist dein Gedächtnis" | +0.54 % |
-| v5 | R3 präzisiert (Cooldown, Ziel-% vom Total) | +1.89 % |
-| v6 | 8 Ticker aus 5 Sektoren, ganze Aktien | +0.58 % |
+| Version | Fokus |
+|---------|-------|
+| v1 | Minimal autonomer Micro-Trading-Agent: Single-Shot-Tagesplan, `$results`-Referenzen, Relative Stärke (NVDA vs. MSFT), maximal 1 Aktie pro Tag, Einstiegspflicht bei leerem Portfolio, Beispiel-Plan |
+
+Die Iterations-Historie (v1–v6) ist in `prompts/CHANGELOG.md` dokumentiert.
+Die Versionen v2–v6 wurden entfernt, weil sie dem didaktischen Anspruch
+nicht genügten; die Erkenntnisse daraus sind in den neu strukturierten
+v1-Prompt eingeflossen.
 
 ---
 

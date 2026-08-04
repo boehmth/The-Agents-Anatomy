@@ -9,7 +9,107 @@ PROMPT_VERSION=v1
 
 ---
 
-## v1 — Baseline (2026-07-15)
+## v1 — Neu strukturiert (Single-Shot, didaktisch) (2026-08-03)
+
+**Ausgangslage**: Die Versionen v2–v6 wurden entfernt, weil sie dem
+didaktischen Anspruch nicht genügten. Der v1-Prompt wurde daraufhin neu
+strukturiert und formuliert, damit er zum aktuellen Single-Shot-Runner
+(`runner/loop.py`: `call_llm()` → `process_steps()`) passt.
+
+**Änderungen gegenüber dem alten v1**:
+
+1. **Neuer Abschnitt „ARBEITSWEISE"**: erklärt explizit, dass der Agent in
+   EINEM JSON-Objekt einen vollständigen Tagesplan liefert und keine zweite
+   Chance hat. Das ist der didaktische Kern des Single-Shot-Workflows.
+
+2. **`done`-Semantik geklärt**: `done` ist immer `true` — der Plan ist der
+   komplette Tagesplan (vorher unklar).
+
+3. **`$results`-Indexierung erklärt**: 0-basierte Position des Steps + mehr
+   Beispiele (vorher nur Syntax ohne Erklärung).
+
+4. **Neuer Abschnitt „HANDELS-REGELN (bindend)"**: konkreter
+   Entscheidungsrahmen statt des vagen Ziels „langfristig maximieren":
+   - Diversifikation (max. ~40 % pro Ticker),
+   - Cash-Reserve (min. ~10 %),
+   - Anti-Panik (keine Verkäufe bei kleinen Schwankungen),
+   - nur GANZE Aktien,
+   - Beträge immer mit dem calculator rechnen,
+   - aktuellsten Kurs aus get_prices nutzen.
+
+5. **Neuer Abschnitt „BEISPIEL-PLAN"**: ein vollständiges, funktionierendes
+   Beispiel mit `$results`-Referenzen.
+
+6. **Redundanz entfernt**: Die Tool-Liste im Systemprompt ist jetzt nur noch
+   eine Kurzübersicht; die Details stehen ausschließlich in
+   `tool_descriptions.txt`.
+
+7. **Tippfehler korrigiert**: „Verkäufsaktion" → „Verkaufsaktion",
+   „Portfolie" → „Portfolio", unklare Formulierungen geglättet.
+
+**`tool_descriptions.txt`**: Beispiel für Bruchteil-Aktien (`0.5@980.00`)
+entfernt und durch ganze Aktien ersetzt, passend zur neuen Regel
+„nur ganze Aktien".
+
+---
+
+## v1 — Strategie vereinfacht (Relative Stärke, 2 Ticker) (2026-08-04)
+
+**Änderungen**:
+
+1. **Ticker-Universum auf NVDA + MSFT reduziert** (Default in
+   `tools/prices.py`, `.env`, `.env.example` und README).
+2. **Strategie-Sektion vereinfacht und auf „Relative Stärke" umgestellt**:
+   - Alte, starre „Pflichtlogik" (5 nummerierte Schritte, „stärkste 2
+     Ticker") ersetzt durch **Leitplanken statt Skript**.
+   - Kernidee: 5-Tage-Entwicklung von NVDA vs. MSFT vergleichen, Kapital
+     tendenziell in den stärkeren Ticker rotieren.
+   - Momentum (5-Tage-Differenz > 0 / < 0) als Rechtfertigung für
+     Kauf/Verkauf.
+   - Bindende Leitplanken: Cash nie < 0, nur ganze Aktien, max. ~40 % pro
+     Ticker, min. ~10 % Cash-Reserve, keine Panik-Verkäufe.
+   - **Autonomie**: Der Prompt betont explizit, dass der Agent selbst
+     entscheidet, WIE er die Prinzipien anwendet (Tools, Reihenfolge,
+     Beträge).
+3. **Beispiel-Plan** auf 2 Ticker erweitert (NVDA + MSFT mit je einer
+   5-Tage-Differenz).
+4. **`model/openai.py`**: `max_completion_tokens` statt `max_tokens`
+   (für gpt-5.x) und Temperatur über `OPENAI_TEMPERATURE` konfigurierbar
+   (Default 1, da gpt-5.x nur 1 unterstützt).
+
+---
+
+## v1 — Micro-Trading-Agent (didaktischer Startmotor) (2026-08-04)
+
+**Ziel**: v1 soll nicht optimal traden, sondern zuverlässig sichtbar handeln,
+damit `runner/loop.py` und der Systemprompt didaktisch verständlich werden.
+
+**Änderungen**:
+
+1. **Micro-Trading-Regel**: maximal 1 Aktie pro Tag. Dadurch bleiben Trades,
+   Cash-Veränderung und Holdings leicht nachvollziehbar.
+2. **Einstiegspflicht bei leerem Portfolio**: Wenn keine Aktien gehalten
+   werden und genug Cash für 1 Aktie des stärkeren Tickers vorhanden ist,
+   muss der Agent eine Einstiegstransaktion planen.
+3. **Relative Stärke bleibt Kernidee**, aber deutlich einfacher:
+   NVDA- und MSFT-5-Tage-Differenz berechnen, stärkeren Ticker wählen,
+   klein handeln.
+4. **Risiko-/Portfolio-Regeln reduziert**: Fortgeschrittene Regeln wie
+   40-%-Positionsgrenze, 10-%-Cash-Reserve oder Rebalancing werden auf spätere
+   Versionen verschoben.
+5. **`runner/loop.py` didaktisch erweitert**:
+   - Warnung bei Modellfehlern im Plan.
+   - Warnung bei leeren Step-Listen.
+   - Rückgabe enthält jetzt auch den Plan.
+   - `data/agent_log.jsonl` speichert pro Tag Plan + Tool-Ergebnisse.
+6. **Kursdaten stabilisiert**: `price_cache.py` entfernt `NaN`-Close-Werte,
+   damit `summary.json` nicht mehr mit `NaN` endet.
+7. **Simulation verbessert**: Provider und Modell werden korrekt angezeigt;
+   `DATA_DIR` wird für Portfolio und Agent-Log synchron gesetzt.
+
+---
+
+## v1 — Baseline (2026-07-15) [historisch, ersetzt]
 
 **Inhalt**: Der Zustand nach dem Refactoring auf `prompts/`, `runner/`, `model/`,
 `tools/`. Der Agent kennt nur `load`, `buy`, `sell`, `get_prices`, `calculator`.
