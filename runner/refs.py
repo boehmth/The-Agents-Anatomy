@@ -2,13 +2,22 @@
 #
 # Wenn der LLM in einem Step-Argument eine Referenz auf ein früheres Ergebnis
 # einfügt (Format: "$results[<index>].<key>[.<subkey>...]"), löst diese Datei
-# den Wert vor dem Tool-Call auf. Beispiel: "12@$results[1].latest.close".
+# den Wert vor dem Tool-Call auf.
+#
+# Zwei Fälle:
+#   1. Das Argument ist GENAU eine einzige Referenz (z. B. "$results[0].products"):
+#      -> der tatsächliche Wert wird übergeben (auch Listen/Dicts). So kann ein
+#         Tool eine Produktliste an das nächste Tool weiterreichen.
+#   2. Die Referenz ist in anderen Text eingebettet (z. B. "1@$results[1].latest.close"):
+#      -> nur skalare Werte (Zahlen/Strings) werden inline eingesetzt.
 
 import re
 from typing import Any, Dict, List
 
 # Findet $results[i].path in einem String (auch eingebettet, z. B. "12@$results[1].latest.close").
 _REF_RE = re.compile(r"\$results\[(\d+)\]\.([A-Za-z0-9_\.\-]+)")
+# Erkennt, ob der GESAMTE String eine einzige Referenz ist.
+_FULL_REF_RE = re.compile(r"^\$results\[(\d+)\]\.([A-Za-z0-9_\.\-]+)$")
 
 
 def _lookup(idx: int, path: str, results: List[Any]) -> Any:
@@ -46,15 +55,23 @@ def _walk(node: Any, path: str) -> Any:
 
 
 def resolve_ref(value: Any, results: List[Any]) -> Any:
-    """Ersetzt jede $results[i].key-Referenz durch ihren Wert (als Text).
+    """Ersetzt jede $results[i].key-Referenz durch ihren Wert.
 
-    Nicht-Strings bleiben unverändert. Skalare (Zahlen) werden als String
-    eingesetzt, damit sie in Tool-Argumenten wie "12@$results[1].latest.close"
-    funktionieren.
+    - Nicht-Strings bleiben unverändert.
+    - Ist der String GENAU eine Referenz, wird der tatsächliche Wert
+      zurückgegeben (auch Listen/Dicts) — für Tool-zu-Tool-Weitergabe.
+    - Ist die Referenz eingebettet, werden nur Skalare (Zahlen/Strings)
+      als Text eingesetzt.
     """
     if not isinstance(value, str):
         return value
 
+    # Fall 1: gesamter String ist eine einzige Referenz -> Objekt übergeben.
+    m = _FULL_REF_RE.match(value.strip())
+    if m:
+        return _lookup(int(m.group(1)), m.group(2), results)
+
+    # Fall 2: eingebettete Referenzen -> nur Skalare inline.
     def _sub(m):
         ref = m.group(0)  # z. B. "$results[3].latest.close"
         val = _lookup(int(m.group(1)), m.group(2), results)

@@ -1,99 +1,112 @@
 Verfügbare Tools (harmonisiertes Interface):
 
-Alle Tools nehmen genau drei String-Argumente entgegen:
-  operation, operand1, operand2
+Alle Tools nehmen bis zu vier String-Argumente entgegen:
+  operation, operand1, operand2, operand3
 
 Zahlen werden IMMER als Strings übergeben (z. B. "3.14", "100").
 Nicht benötigte Argumente werden als leerer String "" übergeben.
 
 ============================================================
-TOOL: get_prices
+TOOL: getProducts
 ============================================================
 Zweck:
-  Liefert die Historie der Schlusskurse für einen Ticker.
-  Für v1 nutzt du normalerweise 20 Tage, damit du die 5-Tage-Differenz
-  berechnen kannst.
+  Lädt die komplette Produktliste des Online-Shops von der Fake Store API.
 
 Args:
-  { "operation": "get",
-    "operand1": "<ticker: NVDA | MSFT>",
-    "operand2": "<days as string, für v1 normalerweise '20'>" }
+  { "operation": "get", "operand1": "", "operand2": "", "operand3": "" }
 
 Ergebnis:
   {
-    "symbol": "<ticker>",
-    "prices": [
-      { "date": "YYYY-MM-DD", "close": <float> },
-      ...
-    ],
-    "latest": { "date": "YYYY-MM-DD", "close": <float> }
+    "products": [ { "id": int, "title": str, "price": float,
+                    "category": str, "rating": { "rate": float, "count": int } },
+                  ... ],
+    "count": <int>
   }
 
 ============================================================
-TOOL: calculator
+TOOL: filterByCategory
 ============================================================
 Zweck:
-  Führt eine exakte arithmetische Operation aus.
-  Der LLM soll Beträge, Renditen etc. NIE selbst rechnen —
-  immer den Calculator nutzen.
+  Filtert eine Produktliste nach einer Kategorie.
 
 Args:
-  { "operation": "add | subtract | multiply | divide",
-    "operand1": "<number as string>",
-    "operand2": "<number as string>" }
+  { "operation": "filterByCategory",
+    "operand1": "<Produktliste, z. B. $results[0].products>",
+    "operand2": "<Kategorie: electronics | jewelery | men's clothing | women's clothing>",
+    "operand3": "" }
 
 Ergebnis:
-  { "result": <float> }
+  { "products": [...], "count": <int>, "category": "<kategorie>" }
 
 ============================================================
-TOOL: portfolio
+TOOL: filterByPrice
 ============================================================
 Zweck:
-  Verwaltet Cash und Aktienbestände.
-  Der initiale Cash-Bestand ist bereits gesetzt — du kannst
-  ihn NICHT ändern. Du kannst nur handeln (kaufen/verkaufen).
-
-Operationen:
-  - load : liefert aktuellen Zustand (Cash + Holdings).
-  - buy  : kauft N Aktien zu Preis P.
-  - sell : verkauft N Aktien zu Preis P.
+  Filtert eine Produktliste nach dem Preis.
 
 Args:
-  load:
-    { "operation": "load", "operand1": "",         "operand2": "" }
-  buy:
-    { "operation": "buy",  "operand1": "<ticker>", "operand2": "<shares>@<price>" }
-  sell:
-    { "operation": "sell", "operand1": "<ticker>", "operand2": "<shares>@<price>" }
+  { "operation": "filterByPrice",
+    "operand1": "<Produktliste, z. B. $results[1].products>",
+    "operand2": "<Operator: '>' | '>=' | '<' | '<=' | '=='>",
+    "operand3": "<Preis-Schwelle als Zahl, z. B. '100'>" }
 
-Beispiele für operand2:
-  "1@145.30"    → 1 Aktie zu 145.30
-  "1@980.00"    → 1 Aktie zu 980.00
+Ergebnis:
+  { "products": [...], "count": <int>, "operator": "<op>", "value": <float> }
 
-Wichtig: Kaufe/verkaufe nur GANZE Aktien (keine Bruchteile).
-Für v1 gilt zusätzlich: handle maximal 1 Aktie pro Tag.
+============================================================
+TOOL: count
+============================================================
+Zweck:
+  Zählt die Anzahl der Items in einer Liste.
 
-Ergebnis (Erfolg):
-  {
-    "date": "YYYY-MM-DD",
-    "cash": <float>,
-    "holdings": { "NVDA": <float>, "MSFT": <float> }
-  }
+Args:
+  { "operation": "count",
+    "operand1": "<Liste, z. B. $results[2].products>",
+    "operand2": "", "operand3": "" }
 
-Ergebnis (Fehler):
-  { "error": "<message>" }
+Ergebnis:
+  { "count": <int> }
 
-Wichtige Regeln:
-- Du kannst nur kaufen, wenn du genug Cash hast.
-- Du kannst nur verkaufen, was du hast.
-- Für v1 sind typische Trades "1@<aktueller Kurs>".
-- Cash < verfügbarem Cash bedeutet NICHT, dass das Portfolio leer ist —
-  du hast dann einfach viele Aktien und wenig Cash.
+============================================================
+TOOL: sum
+============================================================
+Zweck:
+  Summiert ein numerisches Feld über alle Items einer Liste.
+  Standardfeld ist "price"; ein anderes Feld kann als operand2
+  angegeben werden (z. B. "rating.count").
+
+Args:
+  { "operation": "sum",
+    "operand1": "<Liste, z. B. $results[1].products>",
+    "operand2": "<Feldname, optional, Default 'price'>",
+    "operand3": "" }
+
+Ergebnis:
+  { "sum": <float>, "field": "<feld>", "count": <int> }
+
+============================================================
+TOOL: average
+============================================================
+Zweck:
+  Berechnet den Durchschnitt eines numerischen Felds über alle Items
+  einer Liste. Standardfeld ist "price"; ein anderes Feld kann als
+  operand2 angegeben werden (z. B. "rating.rate").
+
+Args:
+  { "operation": "average",
+    "operand1": "<Liste, z. B. $results[1].products>",
+    "operand2": "<Feldname, optional, Default 'price'>",
+    "operand3": "" }
+
+Ergebnis:
+  { "average": <float>, "field": "<feld>", "count": <int> }
 
 ============================================================
 WICHTIG
 ============================================================
-- Es gibt NUR diese drei Tools.
+- Es gibt NUR diese sechs Tools.
 - Es gibt NUR die oben aufgeführten Operationen.
-- Es gibt NUR die Felder operation, operand1, operand2 in args.
+- Es gibt NUR die Felder operation, operand1, operand2, operand3 in args.
 - Alle Werte sind Strings.
+- Produktlisten werden per $results[i].products-Referenz aneinander
+  weitergereicht — niemals als kodierte Zahlen.

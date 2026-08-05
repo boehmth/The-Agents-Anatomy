@@ -1,24 +1,27 @@
-# tools/__init__.py — Registry und Konstanten.
+# tools/__init__.py — Registry der Shop-Controller-Tools.
 
 from .base import AgentTool
-from .prices import PriceTool, TICKERS
-from .calculator import CalculatorTool
-from .portfolio import PortfolioTool, PORTFOLIO_FILE, TRADES_FILE
+from .products import ProductsTool
+from .filters import FilterByCategoryTool, FilterByPriceTool
+from .aggregates import CountTool, SumTool, AverageTool
 
 
 TOOLS = {
-    "get_prices": PriceTool(),
-    "calculator": CalculatorTool(),
-    "portfolio": PortfolioTool(),
+    "getProducts": ProductsTool(),
+    "filterByCategory": FilterByCategoryTool(),
+    "filterByPrice": FilterByPriceTool(),
+    "count": CountTool(),
+    "sum": SumTool(),
+    "average": AverageTool(),
 }
 
 __all__ = [
     "AgentTool",
-    "PriceTool",
-    "CalculatorTool",
-    "PortfolioTool",
+    "ProductsTool",
+    "FilterByCategoryTool",
+    "FilterByPriceTool",
+    "CountTool",
+    "SumTool",
+    "AverageTool",
     "TOOLS",
-    "TICKERS",
-    "PORTFOLIO_FILE",
-    "TRADES_FILE",
 ]

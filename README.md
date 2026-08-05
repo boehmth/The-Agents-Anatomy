@@ -1,7 +1,8 @@
 # The Agents Anatomy
 
-Ein didaktischer, LLM-basierter Trading-Agent, der einmal pro Tag Kurse
-analysiert und über den Kauf/Verkauf von Aktien entscheidet.
+Ein didaktischer, LLM-basierter **Shop-Controller**, der einen kleinen
+Online-Shop (Fake Store API) analysiert und betriebswirtschaftliche Fragen
+beantwortet.
 
 **Ziel dieses Projekts**: Zeigen, wie **dynamisches Tool-Calling** funktioniert
 — und wie sich die Qualität eines Agents allein durch Textänderungen
@@ -13,23 +14,20 @@ analysiert und über den Kauf/Verkauf von Aktien entscheidet.
 
 ```
 The-Agents-Anatomy/
-├── agent.py                # CLI: ein einzelner Agent-Lauf
-├── simulate.py             # CLI + Library: N-Tage-Simulation
-├── benchmark.py            # Fährt mehrere Modelle gegeneinander
-├── report.py               # Baut aus data/leaderboard.csv eine HTML-Seite
-├── plot.py                 # Equity-Kurve + Trade-Marker
+├── agent.py                # CLI: ein einzelner Agent-Lauf (One-Shot)
+├── test.py                 # Selbsttest der Tools (ohne LLM)
 │
 ├── prompts/                # ← reine Texte (Prompt-Versionen)
-│   ├── v1/
-│   ├── CHANGELOG.md
+│   └── v1/
+│       ├── system_prompt.txt       # Shop-Controller-Rolle
+│       └── tool_descriptions.txt   # Tool-Beschreibungen
 │
-├── runner/                 # Orchestrator (Iterations-Loop, $results-Resolver)
+├── runner/                 # Orchestrator (One-Shot-Loop, $results-Resolver)
 ├── model/                  # LLM-Provider (Gemini, OpenAI, DeepSeek, SAP GenAI Hub)
-├── tools/                  # get_prices, calculator, portfolio
-├── clock.py                # simuliertes "heute"
-├── price_cache.py          # yfinance-Vorab-Cache
+├── tools/                  # getProducts, filterByCategory, filterByPrice,
+│                           # count, sum, average
 │
-└── .github/workflows/      # GitHub Actions: täglicher Benchmark
+└── requirements.txt
 ```
 
 Die Ebenen des Agents sind **sauber getrennt**:
@@ -40,10 +38,12 @@ Die Ebenen des Agents sind **sauber getrennt**:
 
 ---
 
-## Wie der Agent arbeitet (Blockdiagramm)
+## Wie der Agent arbeitet (One-Shot-Loop)
 
 Der Agent ist bewusst einfach gehalten: Er besteht aus **genau zwei Teilen** —
-`call_llm()` (Plan holen) und `process_steps()` (Steps ausführen).
+`call_llm()` (Plan holen) und `process_steps()` (Steps ausführen). Es gibt
+**keine zweite Iteration**: Aus der Frage des Nutzers wird in einem einzigen
+Durchlauf ein Plan erzeugt und ausgeführt.
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -54,68 +54,68 @@ Der Agent ist bewusst einfach gehalten: Er besteht aus **genau zwei Teilen** —
                                         │
                     ┌───────────────────▼─────────────────────────┐
                     │  1. call_llm() → JSON-Plan                 │
-                    │     { "steps": [...], "done": true|false }  │
+                    │     { "steps": [...], "answer": "..." }     │
                     └───────────────────┬─────────────────────────┘
                                         │
                     ┌───────────────────▼─────────────────────────┐
                     │  2. process_steps() → Steps ausführen      │
-                    │     get_prices / calculator / portfolio     │
+                    │     getProducts / filterByCategory / ...    │
                     └───────────────────┬─────────────────────────┘
                                         │
                     ┌───────────────────▼─────────────────────────┐
                     │  Ergebnisse in `results` merken             │
-                    │  ($results[i].key-Referenzen)               │
+                    │  ($results[i].products-Referenzen)          │
                     └─────────────────────────────────────────────┘
 ```
 
 **Die zwei Teile im Detail:**
 
-1. **call_llm()** — Das Modell erhält das Tagesziel (mit Datum) und liefert
-   einen JSON-Plan mit `steps` (Tool-Aufrufe) und `done` (fertig ja/nein).
+1. **call_llm()** — Das Modell erhält die Frage des Nutzers und liefert einen
+   JSON-Plan mit `steps` (Tool-Aufrufe) und `answer` (die finale Antwort).
 2. **process_steps()** — Der Runner führt jeden Step der Reihe nach aus.
    Jedes Ergebnis landet in `results`. Ein späterer Step kann per
-   `$results[i].key` auf ein früheres Ergebnis zugreifen, statt den Step zu
-   wiederholen. Die Tools greifen auf `clock.today()` zu, damit alles am
-   simulierten "heute" stattfindet.
+   `$results[i].key` auf ein früheres Ergebnis zugreifen — insbesondere kann
+   eine Produktliste per `$results[i].products` an das nächste Tool
+   weitergereicht werden.
 
 ### Beispiel: Ein konkreter Plan
 
-So könnte der Agent an einem Tag antworten — ein einziger Plan mit allen
-Schritten (Bestandsaufnahme → Analyse → Micro-Trade). In v1 handelt der Agent
-bewusst klein: **maximal 1 Aktie pro Tag**.
+Frage: *"Wie viele Elektronikprodukte kosten mehr als 100 €?"*
 
 ```json
 {
   "steps": [
-    { "tool": "portfolio", "args": { "operation": "load", "operand1": "", "operand2": "" },
-      "description": "Aktuellen Cash- und Holdings-Stand laden" },
-    { "tool": "get_prices", "args": { "operation": "get", "operand1": "NVDA", "operand2": "20" },
-      "description": "NVDA-Historie für die 5-Tage-Rendite" },
-    { "tool": "get_prices", "args": { "operation": "get", "operand1": "MSFT", "operand2": "20" },
-      "description": "MSFT-Historie für die 5-Tage-Rendite" },
-    { "tool": "calculator",
-      "args": { "operation": "subtract",
-                "operand1": "$results[1].latest.close",
-                "operand2": "$results[1].prices.15.close" },
-      "description": "NVDA 5-Tage-Differenz" },
-    { "tool": "calculator",
-      "args": { "operation": "subtract",
-                "operand1": "$results[2].latest.close",
-                "operand2": "$results[2].prices.15.close" },
-      "description": "MSFT 5-Tage-Differenz" },
-    { "tool": "portfolio",
-      "args": { "operation": "buy", "operand1": "NVDA",
-                "operand2": "1@$results[1].latest.close" },
-      "description": "Portfolio ist leer; NVDA ist stärker; 1 NVDA kaufen" }
+    { "tool": "getProducts",
+      "args": { "operation": "get", "operand1": "", "operand2": "", "operand3": "" },
+      "description": "Alle Produkte laden" },
+    { "tool": "filterByCategory",
+      "args": { "operation": "filterByCategory",
+                "operand1": "$results[0].products",
+                "operand2": "electronics",
+                "operand3": "" },
+      "description": "Nur Elektronik behalten" },
+    { "tool": "filterByPrice",
+      "args": { "operation": "filterByPrice",
+                "operand1": "$results[1].products",
+                "operand2": ">",
+                "operand3": "100" },
+      "description": "Nur Produkte über 100 € behalten" },
+    { "tool": "count",
+      "args": { "operation": "count",
+                "operand1": "$results[2].products",
+                "operand2": "",
+                "operand3": "" },
+      "description": "Anzahl zählen" }
   ],
-  "done": true
+  "answer": "Es gibt 5 Elektronikprodukte, die mehr als 100 € kosten."
+
 }
 ```
 
-Die Steps werden der Reihe nach ausgeführt. `$results[1]` verweist auf das
-Ergebnis von Step 1 (get_prices NVDA), `$results[2]` auf Step 2 (get_prices
-MSFT) — so nutzt der Agent die frisch geladenen Kurse, ohne sie als Zahlen
-zu kodieren.
+Die Steps werden der Reihe nach ausgeführt. `$results[0].products` verweist auf
+die Produktliste aus `getProducts`, `$results[1].products` auf die gefilterte
+Elektronik-Liste usw. So nutzt der Agent die frisch geladenen Daten, ohne sie
+als Zahlen zu kodieren.
 
 > **Didaktischer Kern:** Der Agent "denkt" nicht in freiem Text, sondern in
 > **strukturierten Tool-Aufrufen**. Die Qualität hängt fast nur davon ab, wie
@@ -134,14 +134,8 @@ pip install -r requirements.txt
 Kopiere `.env.example` und fülle die Werte aus. Wichtigste Variablen:
 
 ```
-LLM_PROVIDER=sap              # oder "gemini" / "openai" / "deepseek"
+LLM_PROVIDER=gemini              # oder "openai" / "deepseek" / "sap"
 PROMPT_VERSION=v1
-TICKERS=NVDA,MSFT
-
-# Für SAP GenAI Hub:
-SAP_GENAI_SERVICE_KEY_FILE=./.sap_service_key.json
-SAP_GENAI_MODEL=anthropic--claude-4.7-opus
-SAP_GENAI_RESOURCE_GROUP=default
 
 # Für Gemini:
 GOOGLE_API_KEY=...
@@ -153,6 +147,11 @@ OPENAI_MODEL=gpt-4o-mini
 # Für DeepSeek (OpenAI-kompatible API):
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
+
+# Für SAP GenAI Hub:
+SAP_GENAI_SERVICE_KEY_FILE=./.sap_service_key.json
+SAP_GENAI_MODEL=anthropic--claude-4.7-opus
+SAP_GENAI_RESOURCE_GROUP=default
 ```
 
 ### 3. Service-Key hinterlegen
@@ -165,78 +164,35 @@ Für den SAP GenAI Hub die JSON-Datei mit dem Service-Key als
 
 ```bash
 python agent.py
+python agent.py --question "Welche Kategorie hat den höchsten Durchschnittspreis?"
 python agent.py --model gpt-4o --prompt-version v1
-python agent.py --as-of 2025-11-14
 ```
 
-## Eine 5-Tage-Simulation
+Der Agent lädt die Produkte von der Fake Store API, führt den Plan aus und
+gibt die finale Antwort aus. Der Plan und die Tool-Ergebnisse werden nach
+`data/agent_log.jsonl` geschrieben (didaktisch hilfreich zum Nachvollziehen).
+
+## Tools testen (ohne LLM)
 
 ```bash
-python simulate.py --days 5
-python simulate.py --days 15 --model gpt-5.6 --prompt-version v1
+python test.py
 ```
 
-Output in `data/`:
-- `portfolio.csv` — Cash- und Holdings-Verlauf.
-- `trades.csv` — Trade-Log (Kauf/Verkauf mit Preis).
-- `agent_log.jsonl` — pro Tag: Modell-Plan und Tool-Ergebnisse
-  (didaktisch hilfreich zum Nachvollziehen des Loops).
-- `simulation_equity.csv` — täglicher Kontostand.
-- `simulation.png` — Equity-Kurve mit Buy/Sell-Markern.
-- `summary.json` — kompakte Zusammenfassung (P&L, Trades, Audit).
+Führt einen Selbsttest der sechs Tools aus — inklusive der
+`$results[i].products`-Referenzauflösung (Tool-zu-Tool-Weitergabe).
 
-## Modelle vergleichen (Benchmark)
+---
 
-```bash
-python benchmark.py --days 5
-# oder mit expliziter Modellliste:
-python benchmark.py --days 5 \
-    --models gpt-4o-mini,gpt-4o,anthropic--claude-4.7-opus \
-    --prompt-version v1
-```
+## Die Tools
 
-Output pro Lauf:
-```
-data/runs/<YYYY-MM-DD>/<model>/
-    portfolio.csv
-    trades.csv
-    simulation_equity.csv
-    simulation.png
-    summary.json
-```
-
-Zusätzlich wird `data/leaderboard.csv` ergänzt — eine Zeile pro Modell pro
-Datum, ideal für den Zeitreihen-Vergleich.
-
-## HTML-Report
-
-```bash
-python report.py
-```
-
-Baut aus `data/leaderboard.csv` eine `docs/index.html`. Zeigt:
-- Letzten Lauf (Rangliste heute)
-- Aggregat (Ø P&L, Best/Worst, Trades pro Modell)
-- **Trade-Historie** (was wurde wann gekauft/verkauft, aus `data/runs/`)
-- Zeitreihe des P&L pro Modell
-
-## Täglicher GitHub-Benchmark
-
-Der Workflow `.github/workflows/daily-benchmark.yml` läuft werktags um 20:00 UTC
-und tut:
-
-1. Schreibt aus dem GitHub-Secret `SAP_GENAI_SERVICE_KEY_JSON` die Datei
-   `.sap_service_key.json`.
-2. Führt `python benchmark.py --days 5` aus.
-3. Baut den HTML-Report.
-4. Löscht die Service-Key-Datei.
-5. Commited `data/` und `docs/` zurück ins Repo.
-6. Deployed `docs/` auf GitHub Pages.
-
-**Benötigte Secrets** (Settings → Secrets and variables → Actions):
-- `SAP_GENAI_SERVICE_KEY_JSON` — der komplette JSON-Inhalt des Service-Keys.
-
-**Manuell auslösen**: `Actions → Daily Benchmark → Run workflow`.
+| Tool | Zweck |
+|------|-------|
+| `getProducts()` | Lädt alle Produkte von der Fake Store API |
+| `filterByCategory(products, category)` | Filtert nach Kategorie |
+| `filterByPrice(products, operator, value)` | Filtert nach Preis (`>`, `>=`, `<`, `<=`, `==`) |
+| `count(items)` | Zählt die Items einer Liste |
+| `sum(items, field?)` | Summiert ein Feld (Default `price`) |
+| `average(items, field?)` | Durchschnitt eines Felds (Default `price`) |
 
 ---
 
@@ -245,23 +201,17 @@ und tut:
 Der Agent liest aus `prompts/<PROMPT_VERSION>/`. Wechseln über `.env` oder
 CLI-Argument `--prompt-version`.
 
-Aktuell gibt es **eine** Version (`v1`), die zum Single-Shot-Runner passt:
+Aktuell gibt es **eine** Version (`v1`), die zum One-Shot-Runner passt:
 
 | Version | Fokus |
 |---------|-------|
-| v1 | Minimal autonomer Micro-Trading-Agent: Single-Shot-Tagesplan, `$results`-Referenzen, Relative Stärke (NVDA vs. MSFT), maximal 1 Aktie pro Tag, Einstiegspflicht bei leerem Portfolio, Beispiel-Plan |
-
-Die Iterations-Historie (v1–v6) ist in `prompts/CHANGELOG.md` dokumentiert.
-Die Versionen v2–v6 wurden entfernt, weil sie dem didaktischen Anspruch
-nicht genügten; die Erkenntnisse daraus sind in den neu strukturierten
-v1-Prompt eingeflossen.
+| v1 | Minimal autonomer Shop-Controller: One-Shot-Plan, `$results`-Referenzen, Tool-Ketten (getProducts → filter → count/sum/average), Beispiel-Pläne |
 
 ---
 
 ## Sicherheit
 
-- Service-Keys **niemals** ins Repo commiten. Der Workflow zieht sie zur
-  Laufzeit aus GitHub Secrets.
+- Service-Keys **niemals** ins Repo commiten.
 - `.gitignore` blockiert alle üblichen Secret-Dateien.
 - **Privates Repo** wird empfohlen für Produktions-Setup.
 
