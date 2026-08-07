@@ -1,21 +1,24 @@
-# runner/loop.py — Der One-Shot-Loop des Shop-Controllers.
+# runner/loop.py — Der (iterationsfähige) Loop des Shop-Controllers.
 #
 # Der Agent ist bewusst einfach gehalten (didaktisch):
 #   1. System-Prompt bauen (aus prompts/<version>/system_prompt.txt)
-#   2. LLM fragen -> JSON-Plan mit "steps" und "answer"
+#   2. LLM fragen -> JSON-Plan mit "steps" und optional "done"
 #   3. process_steps() führt die Steps aus (mit $results[i].key-Auflösung)
-#   4. Fertig. Es gibt KEINE zweite Iteration.
+#   4. done? -> fertig. sonst: nächste Runde mit den echten Ergebnissen.
 #
 # Der Plan enthält:
 #   - "steps":  Liste der Tool-Aufrufe (getProducts, filterByCategory, ...)
-#   - "answer": die finale betriebswirtschaftliche Antwort auf die Frage
-#               des Nutzers (reine Selbstauskunft des Modells, wird nicht
-#               ausgeführt).
+#   - "done":   optional. true/false. Fehlt das Feld, gilt die Runde als
+#               abgeschlossen (done = true). So läuft V1 (dessen Prompt kein
+#               "done"-Feld kennt) mechanisch exakt einmal durch.
+#   - "answer": optional. die finale betriebswirtschaftliche Antwort auf die
+#               Frage des Nutzers (reine Selbstauskunft des Modells, wird
+#               nicht ausgeführt).
 #
 # Die Tools reichen Produktlisten per $results[i].products-Referenz aneinander
-# weiter (siehe runner/refs.py). So kann der Agent z. B. "Wie viele
-# Elektronikprodukte kosten mehr als 100 €?" in einer Kette aus
-# getProducts -> filterByCategory -> filterByPrice -> count beantworten.
+# weiter (siehe runner/refs.py). Die Indizierung von $results[i] bleibt über
+# alle Runden hinweg stabil: Jeder ausgeführte Step bekommt einen festen Index,
+# unabhängig davon, in welcher Runde er lief.
 
 import os
 import json
@@ -29,6 +32,8 @@ from .refs import resolve_args
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PROMPTS_ROOT = os.path.join(_HERE, "prompts")
+
+DEFAULT_MAX_ITERATIONS = 4
 
 
 def _prompt_dir() -> str:
@@ -90,7 +95,6 @@ def _summarize(result: Any) -> str:
     if "products" in result and "count" in result:
         return f"{result['count']} Produkte geladen"
 
-
     # count
     if "count" in result and len(result) == 1:
         return f"count: {result['count']}"
@@ -124,12 +128,17 @@ def execute_step(step: Dict[str, Any], results: List[Any]) -> Any:
 # ---------------------------------------------------------
 # Steps ausführen
 # ---------------------------------------------------------
-def process_steps(steps: List[Dict[str, Any]]) -> List[Any]:
+def process_steps(steps: List[Dict[str, Any]],
+                  existing_results: Optional[List[Any]] = None) -> List[Any]:
     """Führt alle Steps EINES Plans der Reihe nach aus.
 
-    Gibt die results-Liste zurück (ein Eintrag pro Step, 0-basiert).
+    existing_results: bereits vorhandene Ergebnisse früherer Runden.
+    Neue Steps werden GEGEN DIESE LISTE aufgelöst und ANGEHÄNGT — die
+    Indizierung von $results[i] bleibt über Runden hinweg stabil.
+
+    Gibt die (ggf. verlängerte) results-Liste zurück.
     """
-    results: List[Any] = []
+    results: List[Any] = list(existing_results or [])
     for step in steps:
         idx = len(results)
         desc = step.get("description")
@@ -150,60 +159,107 @@ def process_steps(steps: List[Dict[str, Any]]) -> List[Any]:
 
 
 # ---------------------------------------------------------
-# Agent-Log schreiben (didaktisch: Plan + Ergebnisse pro Lauf)
+# Bisherige Ergebnisse als Text für den nächsten LLM-Aufruf
 # ---------------------------------------------------------
-def _write_agent_log(plan: Dict[str, Any], results: List[Any]) -> None:
+def _render_results_block(results: List[Any]) -> str:
+    """Rendert bisherige Ergebnisse als Text, in EXAKT der Indizierung,
+    die $results[i] im Prompt referenziert — unabhängig davon, in welcher
+    Runde der jeweilige Step lief."""
+    if not results:
+        return ""
+    lines = [
+        "Bisherige Ergebnisse (results) — bereits ausgeführt, "
+        "NICHT wiederholen, per $results[i] referenzieren:"
+    ]
+    for i, r in enumerate(results):
+        lines.append(f"$results[{i}] = {json.dumps(r, ensure_ascii=False, default=str)}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
+# Agent-Log schreiben (didaktisch: Pläne + Ergebnisse pro Lauf)
+# ---------------------------------------------------------
+def _write_agent_log(plans: List[Dict[str, Any]], results: List[Any]) -> None:
     """Schreibt pro Agent-Lauf eine JSONL-Zeile nach data/agent_log.jsonl."""
     data_dir = os.getenv("DATA_DIR", "data")
     os.makedirs(data_dir, exist_ok=True)
     path = os.path.join(data_dir, "agent_log.jsonl")
-    row = {"plan": plan, "results": results}
+    row = {"plans": plans, "results": results}
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
 
 # ---------------------------------------------------------
-# Haupt-Loop (One-Shot)
+# Haupt-Loop (iterationsfähig)
 # ---------------------------------------------------------
-def run_agent(user_question: str) -> Dict[str, Any]:
-    """Führt den Shop-Controller für EINE Frage aus — in einem einzigen
-    Durchlauf (One-Shot):
+def run_agent(user_question: str,
+              max_iterations: int = DEFAULT_MAX_ITERATIONS) -> Dict[str, Any]:
+    """Führt den Shop-Controller für EINE Frage aus.
 
-      1. call_llm()  -> liefert einen JSON-Plan mit "steps" und "answer"
-      2. process_steps() -> führt die Steps aus
-      3. Fertig. Keine zweite Iteration.
+    Der Loop fährt mehrere Runden, bis der Plan "done": true setzt (oder das
+    Feld "done" fehlt — dann gilt die Runde als abgeschlossen) oder das
+    Sicherheitsnetz max_iterations greift.
+
+    V1 (Prompt ohne "done"-Feld) läuft dadurch mechanisch exakt einmal durch.
+    V2 (Prompt mit "done"-Feld) kann über mehrere Runden echte
+    Zwischenergebnisse abwarten, bevor es eine bedingte Entscheidung trifft.
 
     Args:
         user_question: Die betriebswirtschaftliche Frage an den Shop-Controller.
+        max_iterations: Sicherheitsnetz gegen Endlosschleifen (Default 4).
 
     Returns:
-        Dict mit "plan", "results" und "answer".
+        Dict mit "plan" (letzter Plan), "plans" (alle Pläne), "results" und
+        "answer" (aus dem letzten Plan, falls vorhanden).
     """
     system_prompt = build_system_prompt()
-    user_prompt = f"Frage: {user_question}"
 
-    raw_plan = call_llm(system_prompt, user_prompt)
-    if not isinstance(raw_plan, dict):
-        print(f"WARN: Modell lieferte keinen JSON-Plan als Objekt: {type(raw_plan).__name__}")
-        plan: Dict[str, Any] = {"error": "invalid_plan_type", "raw": raw_plan}
-    else:
-        plan = raw_plan
+    all_results: List[Any] = []
+    all_plans: List[Dict[str, Any]] = []
+    done = False
+    iteration = 0
 
-    # ensure_ascii=True: verhindert UnicodeEncodeError auf cp1252-Konsolen (Windows).
-    print("Plan:",
-          json.dumps(plan, ensure_ascii=True, indent=2, default=str))
+    while not done and iteration < max_iterations:
+        iteration += 1
+        print(f"\n=== Runde {iteration} ===")
 
-    results: List[Any] = []
-    if "error" not in plan:
-        steps = plan.get("steps") or []
-        if not steps:
-            print("WARN: Modell lieferte keine ausführbaren Steps.")
-        results = process_steps(steps)
+        user_prompt = f"Frage: {user_question}"
+        results_block = _render_results_block(all_results)
+        if results_block:
+            user_prompt += f"\n\n{results_block}"
 
-    _write_agent_log(plan, results)
+        raw_plan = call_llm(system_prompt, user_prompt)
+        if not isinstance(raw_plan, dict):
+            print(f"WARN: Modell lieferte keinen JSON-Plan als Objekt: "
+                  f"{type(raw_plan).__name__}")
+            plan: Dict[str, Any] = {"error": "invalid_plan_type", "raw": raw_plan}
+        else:
+            plan = raw_plan
+        all_plans.append(plan)
 
+        # ensure_ascii=True: verhindert UnicodeEncodeError auf cp1252-Konsolen (Windows).
+        print("Plan:",
+              json.dumps(plan, ensure_ascii=True, indent=2, default=str))
+
+        if "error" not in plan:
+            steps = plan.get("steps") or []
+            if not steps:
+                print("WARN: Modell lieferte keine ausführbaren Steps.")
+            all_results = process_steps(steps, existing_results=all_results)
+
+        # done: Fehlt das Feld, gilt die Runde als abgeschlossen (V1-Kompatibilität).
+        done = bool(plan.get("done", True))
+
+    if iteration >= max_iterations and not done:
+        print(f"WARN: max_iterations ({max_iterations}) erreicht, "
+              f"ohne dass 'done' gesetzt wurde.")
+
+    _write_agent_log(all_plans, all_results)
+
+    last_plan = all_plans[-1] if all_plans else {}
     return {
-        "plan": plan,
-        "results": results,
-        "answer": plan.get("answer", ""),
+        "plan": last_plan,
+        "plans": all_plans,
+        "results": all_results,
+        "answer": last_plan.get("answer", ""),
     }

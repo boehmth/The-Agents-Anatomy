@@ -1,0 +1,112 @@
+Verfügbare Tools (harmonisiertes Interface):
+
+Alle Tools nehmen bis zu vier String-Argumente entgegen:
+  operation, operand1, operand2, operand3
+
+Zahlen werden IMMER als Strings übergeben (z. B. "3.14", "100").
+Nicht benötigte Argumente werden als leerer String "" übergeben.
+
+============================================================
+TOOL: getProducts
+============================================================
+Zweck:
+  Lädt die komplette Produktliste des Online-Shops von der Fake Store API.
+
+Args:
+  { "operation": "get", "operand1": "", "operand2": "", "operand3": "" }
+
+Ergebnis:
+  {
+    "products": [ { "id": int, "title": str, "price": float,
+                    "category": str, "rating": { "rate": float, "count": int } },
+                  ... ],
+    "count": <int>
+  }
+
+============================================================
+TOOL: filterByCategory
+============================================================
+Zweck:
+  Filtert eine Produktliste nach einer Kategorie.
+
+Args:
+  { "operation": "filterByCategory",
+    "operand1": "<Produktliste, z. B. $results[0].products>",
+    "operand2": "<Kategorie: electronics | jewelery | men's clothing | women's clothing>",
+    "operand3": "" }
+
+Ergebnis:
+  { "products": [...], "count": <int>, "category": "<kategorie>" }
+
+============================================================
+TOOL: filterByPrice
+============================================================
+Zweck:
+  Filtert eine Produktliste nach dem Preis.
+
+Args:
+  { "operation": "filterByPrice",
+    "operand1": "<Produktliste, z. B. $results[1].products>",
+    "operand2": "<Operator: '>' | '>=' | '<' | '<=' | '=='>",
+    "operand3": "<Preis-Schwelle als Zahl, z. B. '100'>" }
+
+Ergebnis:
+  { "products": [...], "count": <int>, "operator": "<op>", "value": <float> }
+
+============================================================
+TOOL: count
+============================================================
+Zweck:
+  Zählt die Anzahl der Items in einer Liste.
+
+Args:
+  { "operation": "count",
+    "operand1": "<Liste, z. B. $results[2].products>",
+    "operand2": "", "operand3": "" }
+
+Ergebnis:
+  { "count": <int> }
+
+============================================================
+TOOL: sum
+============================================================
+Zweck:
+  Summiert ein numerisches Feld über alle Items einer Liste.
+  Standardfeld ist "price"; ein anderes Feld kann als operand2
+  angegeben werden (z. B. "rating.count").
+
+Args:
+  { "operation": "sum",
+    "operand1": "<Liste, z. B. $results[1].products>",
+    "operand2": "<Feldname, optional, Default 'price'>",
+    "operand3": "" }
+
+Ergebnis:
+  { "sum": <float>, "field": "<feld>", "count": <int> }
+
+============================================================
+TOOL: average
+============================================================
+Zweck:
+  Berechnet den Durchschnitt eines numerischen Felds über alle Items
+  einer Liste. Standardfeld ist "price"; ein anderes Feld kann als
+  operand2 angegeben werden (z. B. "rating.rate").
+
+Args:
+  { "operation": "average",
+    "operand1": "<Liste, z. B. $results[1].products>",
+    "operand2": "<Feldname, optional, Default 'price'>",
+    "operand3": "" }
+
+Ergebnis:
+  { "average": <float>, "field": "<feld>", "count": <int> }
+
+============================================================
+WICHTIG
+============================================================
+- Es gibt NUR diese sechs Tools.
+- Es gibt NUR die oben aufgeführten Operationen.
+- Es gibt NUR die Felder operation, operand1, operand2, operand3 in args.
+- Alle Werte sind Strings.
+- Produktlisten werden per $results[i].products-Referenz aneinander
+  weitergereicht — niemals als kodierte Zahlen.

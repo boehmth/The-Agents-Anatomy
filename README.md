@@ -201,15 +201,19 @@ Führt einen Selbsttest der sechs Tools aus — inklusive der
 Der Agent liest aus `prompts/<PROMPT_VERSION>/`. Wechseln über `.env` oder
 CLI-Argument `--prompt-version`.
 
-Aktuell gibt es **eine** Version (`v1`), die zum One-Shot-Runner passt:
+Aktuell gibt es **zwei** Versionen, die beide auf demselben (iterationsfähigen)
+Runner laufen:
 
 | Version | Fokus |
 |---------|-------|
-| v1 | Minimal autonomer Shop-Controller: One-Shot-Plan, `$results`-Referenzen, Tool-Ketten (getProducts → filter → count/sum/average), Beispiel-Pläne |
+| v1 | One-Shot Plan-and-Execute: ein Plan, `$results`-Referenzen, Tool-Ketten (getProducts → filter → count/sum/average), Beispiel-Pläne |
+| v2 | Mehrschritt-Loop: Entscheidungen erst nach echten Zwischenergebnissen (`done`-gesteuert) |
 
 ---
 
 ## Sicherheit
+
+
 
 - Service-Keys **niemals** ins Repo commiten.
 - `.gitignore` blockiert alle üblichen Secret-Dateien.
@@ -217,6 +221,91 @@ Aktuell gibt es **eine** Version (`v1`), die zum One-Shot-Runner passt:
 
 ---
 
+## V1: Grenzen und die Motivation für V2
+
+V1 ist bewusst als **One-Shot Plan-and-Execute** gebaut: Das Modell bekommt
+die Frage, schreibt in einem einzigen Rutsch den kompletten Werkzeug-Plan
+(`steps`), und der Runner führt ihn aus. Die 15 Referenzfragen weiter oben
+sind bewusst so gewählt, dass sie mit genau dieser Architektur zuverlässig
+lösbar sind — das ist die Test-/Referenztabelle für V1.
+
+Das funktioniert, **solange die Struktur des Plans** (welche Tools, in
+welcher Reihenfolge, mit welchen Kategorien/Operatoren) **vorab feststeht** —
+unabhängig davon, welche konkreten Zahlen am Ende herauskommen.
+`$results[i]`-Referenzen erlauben es zwar schon in V1, tatsächliche *Werte*
+erst zur Ausführungszeit einzusetzen (z. B. einen berechneten
+Durchschnittspreis als Schwellenwert in einem späteren Filter-Step), aber
+sie können nicht die *Form* des Plans selbst verändern.
+
+**Die Grenze wird sichtbar, sobald eine Frage einen Kontrollfluss enthält**
+— also eine Entscheidung, die erst mit einer echten Zwischenzahl getroffen
+werden kann:
+
+> "Zähle zuerst alle Elektronikprodukte über 300 €. Nur falls es mehr als 5
+> sind, berechne zusätzlich deren Durchschnittspreis."
+
+V1 muss sich hier **vor** jeder Ausführung committen, ob der `average`-Step
+überhaupt Teil des Plans ist — kennt zu diesem Zeitpunkt die Anzahl aber
+noch nicht. Es kann raten (und liegt mal richtig, mal falsch), aber es kann
+strukturell nicht korrekt "abwarten, bis es die Zahl kennt".
+
+**Das ist die Motivation für V2:** ein echter Mehrschritt-Loop
+(ReAct-artig) — Plan schreiben, ausführen, die *echten* Ergebnisse sehen,
+dann erst über den nächsten Schritt entscheiden. Kein neuer Prompt-Grundtyp,
+keine neuen Tools, kein neuer Code-Pfad für V1 — nur die Fähigkeit, ehrlich
+"ich bin noch nicht fertig" zu sagen (`done: false`) und danach mit echtem
+Wissen statt Vermutungen weiterzumachen.
+
+### Die drei Szenarien im Vergleich
+
+Der Unterschied lässt sich am besten anhand von drei konkreten Läufen
+nachvollziehen. Alle drei nutzen dieselbe Frage — einmal eine, die V1
+problemlos kann, und einmal eine Kontrollfluss-Frage, die V1 strukturell
+nicht lösen kann:
+
+**Szenario 1 — Erfolgreiche V1-Ausführung** (One-Shot-Frage, in einer Runde
+planbar):
+
+```bash
+python agent.py --prompt-version v1 "Wie viele Elektronikprodukte kosten mehr als 100 €?"
+```
+
+V1 plant `getProducts → filterByCategory → filterByPrice → count` in **einer**
+Runde und liefert korrekt: *"5 Elektronikprodukte kosten mehr als 100 €."*
+Hier ist die Tool-Kette vorab bekannt — V1 ist dafür ideal.
+
+**Szenario 2 — V2-Kontrollfluss-Frage im V1-Loop-Modus (scheitert):**
+
+```bash
+python agent.py --prompt-version v1 "Zähle zuerst alle Elektronikprodukte über 300 €. Nur falls es mehr als 5 sind, berechne zusätzlich deren Durchschnittspreis."
+```
+
+V1 muss sich **vor** jeder Ausführung committen, ob der `average`-Step Teil
+des Plans ist — kennt die Anzahl zu diesem Zeitpunkt aber noch nicht. Es
+plant den `average` blind mit (oder lässt ihn weg) und kann die Bedingung
+nicht abwarten. Da es nur 2 Elektronikprodukte über 300 € gibt (nicht > 5),
+ist der vorab geplante `average` falsch bzw. überflüssig — die Antwort ist
+strukturell nicht zuverlässig.
+
+**Szenario 3 — Erfolgreiche V2-Ausführung** (gleiche Frage, jetzt
+`done`-gesteuert):
+
+```bash
+python agent.py --prompt-version v2 "Zähle zuerst alle Elektronikprodukte über 300 €. Nur falls es mehr als 5 sind, berechne zusätzlich deren Durchschnittspreis."
+```
+
+Runde 1 plant nur `getProducts → filterByCategory → filterByPrice → count`
+mit `done: false`. Runde 2 sieht das echte `count` (2) und setzt `done: true`
+mit der Antwort: *"Es gibt 2 Elektronikprodukte über 300 €. Da das nicht mehr
+als 5 sind, wurde kein Durchschnitt berechnet."* — die Entscheidung fällt
+erst mit echtem Wissen statt einer Vermutung.
+
+Die Referenzfragen für V2 stehen in [`docs/v2-test-cases.md`](docs/v2-test-cases.md).
+
+---
+
 ## Lizenz
 
 Didaktisches Projekt, freie Verwendung.
+
+

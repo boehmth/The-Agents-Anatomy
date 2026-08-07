@@ -1,0 +1,108 @@
+Bewertung des aktuellen Stands (README + der Code, den wir gemeinsam durchgegangen sind):
+
+Für den Einstieg in "was ist überhaupt ein Agent" ist das Projekt gut geeignet — und zwar aus genau den Gründen, die im README stehen:
+
+Saubere Schichtentrennung (Prompt / Runner / Model / Tools) — man sieht sofort, welche Schicht wofür zuständig ist.
+$results[i].key-Referenzierung zeigt sehr konkret, wie ein Agent "Gedächtnis für den aktuellen Lauf" bekommt, ohne dass man Vektor-DBs oder Ähnliches braucht.
+Austauschbare Modell-Provider (Gemini/OpenAI/SAP GenAI Hub) zeigen früh: der Agent-Loop ist modellagnostisch.
+Benchmark/Report/GitHub-Actions-Infrastruktur ist für ein Lehrprojekt ungewöhnlich weit ausgebaut — das ist ein echter Pluspunkt, weil man Modelländerungen/Prompt-Änderungen empirisch vergleichen kann, statt nur zu vermuten.
+
+Aber: Wir haben in den letzten Runden gemeinsam live erlebt, wo die Grenze ist. Der One-Shot-Ansatz führte zu 0 Trades (Modell "rät" Ergebnisse, die es noch nicht kennt), dann zu falschen Trades (done:true trotz erfundener Zahlen), dann zu Laufzeitfehlern, die einfach stillschweigend geloggt wurden, statt korrigiert zu werden. Das ist genau deine Punkte 1–3, konkret erlebt statt nur behauptet — didaktisch eigentlich ideal, weil man den Fehler nicht erklären muss, man hat ihn im Log.
+
+Damit zu deiner eigentlichen Frage — ein Curriculum, Version für Version:
+
+Version	Technik	Warum an dieser Stelle
+v1 ✅ vorhanden	Single-Shot Plan-and-Execute, $results-Referenzen	Grundmechanik: Plan → Tool-Zuordnung → Ausführung
+v2	Echter Mehrschritt-Loop (ReAct-Prinzip): planen → ausführen → echte Ergebnisse sehen → weiterplanen, bis done	Ohne das ist alles danach witzlos — Reasoning über erfundene Zahlen ist kein Reasoning. Haben wir am Trading-Agent schon gebaut, hier als dokumentierte Stufe mit Vorher/Nachher-Vergleich
+v3	Strukturelle Verifikation: Plan-JSON gegen Schema prüfen (fehlende Felder, falscher Typ), done:true gegen Plausibilität prüfen (z. B. Platzhalter-Werte in "analysis")	Fundament für Retry — man muss zuerst erkennen, dass etwas falsch ist, bevor man es korrigieren kann
+v4	Technischer Retry-Mechanismus (dein Punkt 2): Bei Tool-Fehler oder Schema-Verstoß wird der Fehler als Text an das Modell zurückgegeben ("dein letzter Step ist fehlgeschlagen: shares and price must be > 0 — korrigiere") statt nur geloggt. Begrenzt auf z. B. 2–3 Versuche	Klassisches "self-healing agent"-Pattern — genau der Fehlertyp, den wir im Log mehrfach gesehen haben (0.0@206.83...), wurde bisher nie korrigiert, nur dokumentiert
+v5	Reasoning/Thinking vor dem Plan (dein Punkt 3a): explizites Scratchpad-Feld oder natives Thinking (z. B. Claude Extended Thinking, o-Serie mit reasoning_effort) vor der JSON-Antwort, statt nur ein analysis-Feld als Pflicht-Attrappe	Baut auf v2–v4 auf: erst wenn der Loop technisch stabil ist, lohnt sich der Vergleich "freies Reasoning vs. harte Regel" — sonst vermischt man wieder zwei Fehlerquellen
+v6	Modell-Routing/Eskalation (dein Punkt 3b): gpt-4.1-mini versucht zuerst; meldet das Modell selbst Unsicherheit (z. B. ein "confidence": "low"-Feld oder ein Parsing-/Retry-Fehlschlag nach v4), wird mit einem stärkeren Reasoning-Modell erneut versucht	Braucht v3/v4 als Unsicherheits-/Fehler-Erkennung — sonst hat man kein Kriterium, WANN eskaliert wird
+
+Weitere Stufen, die sich später anschließen (nur als Ausblick, nicht sofort):
+
+v7 — Reflexion/Gedächtnis über Tage hinweg: der Agent schreibt sich kurze Notizen ("letzte Woche NVDA zu früh verkauft"), die in künftige Prompts einfließen (Reflexion-Pattern).
+v8 — Kritiker/Gegenkontrolle: ein zweiter LLM-Aufruf prüft den Plan des ersten, bevor er ausgeführt wird (Separation of Concerns, "Vier-Augen-Prinzip" für Agenten).
+v9 — natives Function-Calling statt Text-JSON: Vergleich eures handgebauten $results-Mechanismus mit der nativen Tool-Use-API der Provider — guter Lerneffekt, warum ihr es zu Lehrzwecken selbst gebaut habt.
+v10 — Eval-Harness statt nur P&L: feste historische Zeiträume mit erwartetem qualitativem Verhalten (nicht nur Rendite, die vom Marktzufall abhängt) — ähnlich Unit-Tests fürs Agentenverhalten selbst.
+
+Mein Vorschlag für den nächsten konkreten Schritt: mit v4 (Retry-Mechanismus) anfangen, direkt auf Basis des Zwei-Iterationen-Loops, den wir schon gebaut haben (der deckt v2 im Kern schon ab) — dann v3 als kleine Ergänzung dazu (Schema-Check vor Ausführung), dann v5/v6. Das ist die Reihenfolge, in der jede Stufe den vorherigen Bug-Typ aus unseren Testläufen direkt behebt. Passt dir das, oder soll ich zuerst v3 (Verifikation) separat bauen, bevor wir Retry einbauen?
+
+Verifizierte API-Kategoriestrings und identifizierte häufige Fehlerquellen
+Verifizierte API-Kategoriestrings und identifizierte häufige Fehlerquellen
+
+Confirmt: die vier echten Kategorie-Strings der Fake Store API sind electronics, jewelery (achte auf die Schreibweise — kein zweites "l"), men's clothing, women's clothing (mit Apostroph). Das ist gleich relevant für mein v3-Beispiel unten.
+
+Hier die Zuordnung — pro Version ein Prompt, der mit reinem v1-One-Shot nicht zuverlässig funktioniert, warum, und was sich konkret ändert:
+
+v2 — Echter Mehrschritt-Loop
+
+"Falls es mehr als 5 Elektronikprodukte über 300 € gibt, wie hoch ist dann deren Durchschnittspreis? Sonst sag mir nur die Anzahl."
+
+Warum v1 scheitert: Das ist kein "mehr Steps"-Problem (das kann One-Shot), sondern ein Kontrollfluss-Problem: Ob der average-Step überhaupt in den Plan gehört, hängt von einer Zahl ab, die erst nach der Ausführung von count existiert. Im One-Shot muss sich das Modell VOR jeder Ausführung committen — es kann den average-Step nicht bedingt einbauen, weil es die Bedingung noch nicht prüfen kann. Symbolische $results[i]-Referenzen (wie bei euren Trading-Steps) lösen das nicht, weil die hier nicht nur einen Wert transportieren, sondern die Struktur des Plans selbst bestimmen müssten.
+
+Übergang: Runde 1 (done:false) macht getProducts → filterByCategory → filterByPrice → count. Runde 2 bekommt die echte Zahl im Kontext (z. B. count=7) und entscheidet dann mit echtem Wissen, ob ein average-Step folgt oder der Plan hier endet. Technisch: genau der Loop, den wir am Trading-Agent gebaut haben (results-Akkumulation über Iterationen, done steuert die Schleife).
+
+v3 — Strukturelle Verifikation
+
+"Wie hoch ist der Durchschnittspreis der Kategorie 'electronic'?" (User schreibt es leicht anders/vertippt sich — oder das Modell "erinnert" sich an eine falsche Schreibweise)
+
+Warum v1 scheitert — und zwar besonders tückisch: filterByCategory(products, "electronic") (Singular statt "electronics") crasht NICHT. Es liefert einfach eine leere Liste (0 Treffer), und average([]) liefert entweder einen Fehler oder — schlimmer — undefiniertes Verhalten wie 0 oder NaN, je nachdem wie ihr das implementiert. Der Nutzer bekommt eine plausibel aussehende, aber falsche Antwort, ohne jede Fehlermeldung. Das ist gefährlicher als ein Crash, weil es niemandem auffällt.
+
+Übergang: Vor der Ausführung wird jeder Plan gegen ein Schema geprüft: category muss einer von exakt vier bekannten Strings sein, operator einer von >,<,>=,<=,==, value/products müssen die richtigen Typen haben. Das fängt den Fehler vor der Ausführung ab, statt eine plausible Falschantwort durchzulassen. Technisch: eine kleine Validierungsschicht zwischen call_llm() und process_steps() — reine Typ-/Enum-Prüfung, kein Verständnis der Handelslogik nötig.
+
+v4 — Technischer Retry
+
+Gleiches Beispiel wie v3 (Kategorie-Tippfehler), aber jetzt geht's um Reparatur statt nur Erkennung.
+
+Warum v1 (und sogar v3 allein) nicht reicht: v3 erkennt den Fehler, aber der Nutzer bekommt trotzdem keine Antwort — nur eine Fehlermeldung oder einen Abbruch. Bei echten Tool-Laufzeitfehlern (z. B. filterByPrice mit operator: "=" statt "==") ist es genau dasselbe: erkannt, aber nicht behoben.
+
+Übergang: Der validierte/technische Fehler wird als Text zurück an das Modell gegeben ("Ungültige Kategorie 'electronic'. Gültige Werte: electronics, jewelery, men's clothing, women's clothing — bitte korrigieren"), begrenzt auf z. B. 2 Versuche. Der Nutzer bekommt am Ende die richtige Antwort, nicht nur einen sauber dokumentierten Fehler.
+
+v5 — Reasoning/Thinking vor dem Plan
+
+"Wie viele Produkte kosten zwischen 20 € und 80 €, sind aber NICHT aus der Kategorie Elektronik?"
+
+Warum v1 scheitert: Euer Tool-Set kann nur einschließend filtern (filterByCategory gibt eine Kategorie zurück), es gibt kein "alle außer X". Die korrekte Lösung braucht eine Umformulierung: entweder die drei anderen Kategorien einzeln filtern und zusammenzählen, oder erst mit Preisfilter arbeiten und danach die Elektronik-Treffer davon abziehen (count(preisgefiltert) - count(preisgefiltert ∩ electronics)). Das ist kein Formatproblem, sondern ein Zerlegungsproblem — ohne explizite Aufforderung zum Vorab-Nachdenken tendieren gerade kleinere Modelle dazu, das nächstliegende bekannte Muster (filterByCategory mit einer erfundenen Kategorie wie "not-electronics") zu kopieren, was schlicht nicht existiert.
+
+Übergang: Ein Scratchpad-/Denkfeld vor dem steps-Array (oder natives Thinking, falls Modell/Provider das unterstützt), das explizit zur Zerlegung zwingt, bevor die Tool-Kette geschrieben wird. Hier lohnt sich auch ein direkter A/B-Vergleich: dieselbe Frage mit und ohne Denkfeld, gleiches Modell — sehr anschauliches Lehrbeispiel.
+
+v6 — Modell-Routing/Eskalation
+
+Dieselbe Ausschluss-Frage aus v5, aber jetzt geht's um Kosten/Nutzen, nicht nur Korrektheit.
+
+Warum v1 (mit nur einem festen Modell) unpassend ist: 14 von euren 15 Beispielfragen sind für gpt-4.1-mini trivial — dafür ein teureres Reasoning-Modell zu nutzen, ist Verschwendung. Aber die Ausschluss-Frage überfordert das kleine Modell tendenziell öfter.
+
+Übergang: gpt-4.1-mini versucht zuerst. Schlägt die v3-Validierung fehl oder erschöpft v4 seine Retry-Versuche, ohne einen gültigen Plan zu bekommen, wird derselbe Prompt an ein stärkeres Modell eskaliert (z. B. mit explizitem Reasoning-Modus). Technisch baut das direkt auf v3/v4 auf — ohne die Fehlererkennung aus v3 gäbe es kein Kriterium, WANN eskaliert werden soll.
+
+Eine Beobachtung am Rande, die zu eurer Tabelle mit den 15 Fragen passt: Alle 15 sind bewusst oder unbewusst so gewählt, dass sie strukturell entscheidbar sind, ohne Zwischenergebnisse zu kennen — das ist der Grund, warum sie schon mit reinem One-Shot funktionieren. Das ist selbst schon eine gute Lehrbeobachtung: die Grenze von v1 ist nicht "kompliziertere Fragen", sondern ganz präzise "Fragen, deren Tool-Kette von einem tatsächlich berechneten Wert abhängt" (v2) bzw. "die mit den vorhandenen Tools gar nicht direkt ausdrückbar sind" (v5).
+
+Soll ich als Nächstes anfangen, v2 konkret für den Shop-Controller zu bauen (Runner-Loop + das erste Beispiel oben als Testfall), oder erst die Tool-Definitionen/Prompt für v1 fertigstellen, falls die noch nicht stehen?
+
+die originaltabelle mit 15 fragen wurde tatsächlich so gewählt, dass one-shot ok ist. das ist quasi die referenz oder test-tabelle für V1. wir brauchen das gleiche für die fortlaufenden versionen. ich möchte von dir drei dinge. eine Diskussion von V1 mit seinen Limitationen, die wir als Motivation für V2 nehmen. Formuliere das so, dass es an den Fuß des aktuellen ReadMe passt. Anschließend brauche ich von dir eine Instruktion für CLINE, wie das aktuelle Projekt weiterenwickelt werden soll, erstmal nur zu V2, inkl. didaktischer Erklärungen, Diagramme, Beispiele, etc. Ich denke, Tools und Model-Ordner bleiben komplett unangetastet. Wie wollen V1 und V2 ausführbar haben. Die struktur soll so einfach und minimal wie möglich sein.
+
+Architektierte V1-Limitationen, V2-Iterationsloop und Cline-Implementierungsstrategie
+Architektierte V1-Limitationen, V2-Iterationsloop und Cline-Implementierungsstrategie
+
+Sehr sinnvolle Reihenfolge. Ich baue dir alle drei Teile — als Dateien, damit du sie direkt kopieren/einfügen kannst.
+
+2 Dateien erstellt
+2 Dateien erstellt
+
+Jetzt die Instruktion für Cline — mit Diagramm, konkretem Code-Vorschlag für runner/loop.py, dem vollen v2-Prompt-Entwurf und Abnahmekriterien:
+
+Datei erstellt, datei lesen
+Datei erstellt, datei lesen
+
+Kurz zu den drei Dateien und wie sie zusammenspielen:
+
+README_v1_grenzen_v2_motivation.md — zum Anhängen an den Fuß des bestehenden READMEs, direkt vor "Sicherheit"/"Lizenz". Verlinkt auf docs/v2-test-cases.md.
+v2-test-cases.md — die Referenztabelle für V2, analog zu eurer 15-Fragen-Tabelle für V1. Wichtig: jede Zeile prüft explizit, dass V1 hier strukturell scheitert (nicht nur "mehr Steps"), damit die Abgrenzung zu v5/v6 (Reasoning/Routing) sauber bleibt.
+cline_instruktion_v2.md — die eigentliche Arbeitsanweisung, mit Diagramm, vollständigem runner/loop.py-Codevorschlag, komplettem prompts/v2/system_prompt.txt-Entwurf (inkl. Few-Shot-Beispiel — hat sich bei uns bisher als wichtig erwiesen, siehe die Trading-Agent-Erfahrung) und klaren Abnahmekriterien.
+
+Eine Sache, die ich Cline bewusst explizit aufgetragen habe: zuerst die bestehenden Dateien zeigen, bevor irgendetwas geändert wird. Ich kenne euren tatsächlichen Shop-Controller-Code nicht (nur was wir gemeinsam besprochen haben), daher sind meine Code-Vorschläge Annahmen auf Basis des Trading-Agent-Patterns — Cline soll die an das anpassen, was wirklich da ist, statt blind zu überschreiben.
+
+Zwei Dinge, die du prüfen solltest, bevor du das an Cline gibst:
+
+Die exakten Argument-Namen im v2-Prompt (products, items, operator, value, category) sind meine Annahme aus unserer früheren Diskussion — falls eure Tool-Implementierung andere Parameternamen nutzt, muss der Prompt entsprechend angepasst werden (am besten von Cline selbst, nachdem es tools/ gelesen hat).
+Ich bin bei den Fake-Store-Kategorienamen von den echten API-Werten ausgegangen (electronics, jewelery, men's clothing, women's clothing — per Web-Suche verifiziert), falls euer tools/-Code das anders normalisiert hat, gleich das ab.
