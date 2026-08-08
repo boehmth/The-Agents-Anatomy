@@ -108,8 +108,8 @@ Frage: *"Wie viele Elektronikprodukte kosten mehr als 100 €?"*
       "description": "Anzahl zählen" }
   ],
   "answer": "Es gibt 5 Elektronikprodukte, die mehr als 100 € kosten."
-
 }
+
 ```
 
 Die Steps werden der Reihe nach ausgeführt. `$results[0].products` verweist auf
@@ -196,24 +196,70 @@ Führt einen Selbsttest der sechs Tools aus — inklusive der
 
 ---
 
-## Prompt-Versionen
+## Prompt-Versionen & Agent-Versionen
 
 Der Agent liest aus `prompts/<PROMPT_VERSION>/`. Wechseln über `.env` oder
 CLI-Argument `--prompt-version`.
 
-Aktuell gibt es **zwei** Versionen, die beide auf demselben (iterationsfähigen)
+Aktuell gibt es **vier** Versionen, die alle auf demselben (iterationsfähigen)
 Runner laufen:
 
 | Version | Fokus |
 |---------|-------|
 | v1 | One-Shot Plan-and-Execute: ein Plan, `$results`-Referenzen, Tool-Ketten (getProducts → filter → count/sum/average), Beispiel-Pläne |
 | v2 | Mehrschritt-Loop: Entscheidungen erst nach echten Zwischenergebnissen (`done`-gesteuert) |
+| v3 | Strukturelle Verifikation: jeder Plan wird VOR der Ausführung gegen ein Schema geprüft (bekannte Kategorien, erlaubte Operatoren, Pflichtfelder); ungültige Steps werden NICHT ausgeführt, sondern als sichtbarer Validierungsfehler ins Log geschrieben |
+| v4 | Technischer Retry (Self-Healing): fehlgeschlagene Steps (V3-Validierungsfehler ODER echte Tool-Laufzeitfehler) werden als Text an das Modell zurückgegeben; es bekommt eine begrenzte Anzahl Korrektur-Versuche (`max_retries`) |
+
+### Der didaktische "Aufbau"-Schalter: `AGENT_VERSION`
+
+Jede Version ist ein **explizites Feature-Set** (siehe `runner/features.py`).
+So sieht man auf einen Blick, was jede Version "aufbaut" — und jede Version
+ist einzeln aktivierbar:
+
+| Version | `done_field` | `validate` | `retry` | Bedeutung |
+|---------|:---:|:---:|:---:|-----------|
+| v1 | ✗ | ✗ | ✗ | One-Shot, keine Verifikation |
+| v2 | ✓ | ✗ | ✗ | Mehrschritt-Loop (`done`-gesteuert) |
+| v3 | ✓ | ✓ | ✗ | + strukturelle Verifikation |
+| v4 | ✓ | ✓ | ✓ | + technischer Retry (Self-Healing) |
+- `done_field` ist eine **Prompt**-Eigenschaft (V2s `system_prompt.txt` lehrt
+  das Modell, `done` zu setzen). Der Runner ist dafür bereits generisch.
+- `validate` ist eine **Code**-Eigenschaft (`runner/validate.py`). Sie wird
+  über `features["validate"]` der aktiven Version geschaltet — V1/V2 führen
+  Pläne unverändert aus, V3 prüft sie vorher.
+- `retry` ist eine **Code**-Eigenschaft (`runner/loop.py`). Sie wird über
+  `features["retry"]` der aktiven Version geschaltet — V4 gibt
+  fehlgeschlagene Steps als Text an das Modell zurück und erlaubt eine
+  begrenzte Anzahl Korrektur-Versuche.
+
+Die aktive Version wird über `AGENT_VERSION` gewählt (Fallback:
+`PROMPT_VERSION`, dann `v1`). `AGENT_VERSION` steuert **beides**: die
+Prompt-Auswahl **und** die Code-Fähigkeiten. So bleibt jede Version explizit
+aktivierbar, und zukünftige Versionen (V5+) fügen in `runner/features.py`
+einfach ein weiteres Feature hinzu — ohne den Loop anzufassen.
+
+```bash
+# V1 (One-Shot, keine Verifikation)
+python agent.py --agent-version v1
+
+# V2 (Mehrschritt-Loop, keine Verifikation)
+python agent.py --agent-version v2
+
+# V3 (Mehrschritt-Loop + strukturelle Verifikation)
+python agent.py --agent-version v3
+
+# V4 (Mehrschritt-Loop + Verifikation + technischer Retry)
+python agent.py --agent-version v4
+```
+
+Die vollständige technische Evolutions-Roadmap des Agents (v1–v10, inkl.
+Ausblick auf Verifikation, Retry, Reasoning, Modell-Routing u. a.) steht in
+[`docs/evolution.md`](docs/evolution.md).
 
 ---
 
 ## Sicherheit
-
-
 
 - Service-Keys **niemals** ins Repo commiten.
 - `.gitignore` blockiert alle üblichen Secret-Dateien.
@@ -225,20 +271,22 @@ Runner laufen:
 
 V1 ist bewusst als **One-Shot Plan-and-Execute** gebaut: Das Modell bekommt
 die Frage, schreibt in einem einzigen Rutsch den kompletten Werkzeug-Plan
-(`steps`), und der Runner führt ihn aus. Die 15 Referenzfragen weiter oben
-sind bewusst so gewählt, dass sie mit genau dieser Architektur zuverlässig
-lösbar sind — das ist die Test-/Referenztabelle für V1.
+(`steps`), und der Runner führt ihn aus. Die 15 Referenzfragen in
+[`test_cases_v1.md`](test_cases_v1.md) sind bewusst so gewählt, dass sie mit
+genau dieser Architektur zuverlässig lösbar sind — das ist die
+Test-/Referenztabelle für V1.
 
 Das funktioniert, **solange die Struktur des Plans** (welche Tools, in
 welcher Reihenfolge, mit welchen Kategorien/Operatoren) **vorab feststeht** —
 unabhängig davon, welche konkreten Zahlen am Ende herauskommen.
+
 `$results[i]`-Referenzen erlauben es zwar schon in V1, tatsächliche *Werte*
 erst zur Ausführungszeit einzusetzen (z. B. einen berechneten
 Durchschnittspreis als Schwellenwert in einem späteren Filter-Step), aber
 sie können nicht die *Form* des Plans selbst verändern.
 
-**Die Grenze wird sichtbar, sobald eine Frage einen Kontrollfluss enthält**
-— also eine Entscheidung, die erst mit einer echten Zwischenzahl getroffen
+**Die Grenze wird sichtbar, sobald eine Frage einen Kontrollfluss enthält** —
+also eine Entscheidung, die erst mit einer echten Zwischenzahl getroffen
 werden kann:
 
 > "Zähle zuerst alle Elektronikprodukte über 300 €. Nur falls es mehr als 5
@@ -304,8 +352,90 @@ Die Referenzfragen für V2 stehen in [`docs/v2-test-cases.md`](docs/v2-test-case
 
 ---
 
+## V2: Grenzen und die Motivation für V3
+
+V2 löst das Kontrollfluss-Problem, indem es Entscheidungen erst nach echten
+Zwischenergebnissen trifft (`done`-gesteuert). Aber es gibt eine neue,
+**andere** Fehlerklasse: Das Modell kann einen Plan liefern, der **strukturell
+ungültig** ist — und V2 führt ihn trotzdem aus.
+
+**Beispiele für strukturell ungültige Pläne:**
+
+- `filterByCategory` mit `operand2="electronic"` (Tippfehler) statt
+  `"electronics"` → liefert still 0 Produkte, obwohl es Elektronik gibt.
+- `filterByPrice` mit `operand2="="` statt `"=="` → der Operator ist kein
+  bekannter Wert, das Tool gibt einen Fehler zurück.
+- `filterByPrice` mit `operand3="teuer"` statt einer Zahl → nicht ausführbar.
+- Ein unbekanntes Tool (`tool="filterByCategry"`) → "unknown tool".
+
+Das Problem: **Der Fehler passiert erst zur Laufzeit** — und je nach Tool
+entweder als stille Falschantwort (falsche Kategorie) oder als generischer
+Fehler, der im Log untergeht. Der Agent "merkt" es nicht, weil es keine
+zweite Iteration gibt (One-Shot).
+
+**Das ist die Motivation für V3:** eine **strukturelle Verifikation VOR der
+Ausführung**. Jeder Plan wird gegen ein Schema geprüft:
+
+- bekannte Kategorien (`electronics`, `jewelery`, `men's clothing`,
+  `women's clothing`),
+- erlaubte Operatoren (`<`, `<=`, `==`, `>`, `>=`),
+- Pflichtfelder (`operand1`/`operand2`/`operand3` je nach Tool),
+- numerische Preis-Schwellen,
+- bekannte Tool-Namen.
+
+Ungültige Steps werden **NICHT ausgeführt**, sondern durch ein
+`__validation_error__`-Ergebnis ersetzt, das den konkreten Grund enthält.
+So bleibt die `$results[i]`-Indizierung stabil und der Fehler ist **sichtbar
+im Log** — statt einer stillen Falschantwort.
+
+> **Wichtig:** V3 korrigiert NICHT automatisch (das ist V4). Es erkennt und
+> meldet nur. Die Verifikation ist für gültige Pläne unsichtbar — alle
+> bisherigen V1/V2-Referenzfragen laufen unverändert.
+
+Die Testfälle für V3 stehen in [`docs/v3-test-cases.md`](docs/v3-test-cases.md).
+
+---
+
+## V3: Grenzen und die Motivation für V4
+
+V3 erkennt strukturell ungültige Pläne **vor** der Ausführung und ersetzt
+ungültige Steps durch einen sichtbaren `__validation_error__`. Aber es gibt
+eine neue, **andere** Fehlerklasse: **echte Tool-Laufzeitfehler**, die V3
+nicht vorhersehen kann.
+
+**Beispiele für Laufzeitfehler, die V3 nicht abfängt:**
+
+- Die Fake Store API ist kurz nicht erreichbar (`getProducts` wirft einen
+  Netzwerkfehler).
+- Ein Produkt hat ein unerwartetes Feldformat (z. B. `price` als String
+  statt Zahl), sodass `sum`/`average` fehlschlägt.
+- Ein `$results[i]`-Verweis zeigt auf einen Index, der nicht existiert.
+
+Das Problem: **V3 meldet den Fehler nur** — es gibt keine zweite Iteration,
+in der das Modell den Plan korrigieren könnte. Der Lauf endet mit einem
+Fehler, obwohl das Modell die Frage eigentlich beantworten könnte.
+
+**Das ist die Motivation für V4:** ein **technischer Retry (Self-Healing)**.
+Fehlgeschlagene Steps (V3-Validierungsfehler ODER echte Tool-Laufzeitfehler)
+werden als Text an das Modell zurückgegeben. Das Modell bekommt eine
+begrenzte Anzahl Korrektur-Versuche (`max_retries`) und kann den Plan
+reparieren — z. B. den Operator korrigieren, die Kategorie richtig
+schreiben oder einen fehlenden `$results`-Verweis auflösen.
+
+> **Wichtig:** V4 korrigiert nur **technische** Fehler (Struktur, Laufzeit).
+> Es ist kein Reasoning-Loop — die inhaltliche Qualität der Antwort bleibt
+> Aufgabe des Prompts.
+
+Die Testfälle für V4 stehen in [`docs/v4-test-cases.md`](docs/v4-test-cases.md).
+
+---
+
 ## Lizenz
 
 Didaktisches Projekt, freie Verwendung.
+
+
+
+
 
 

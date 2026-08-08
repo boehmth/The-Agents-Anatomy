@@ -27,23 +27,32 @@ from typing import Any, Dict, List, Optional
 from model import call_llm
 from tools import TOOLS
 
+from .features import active_version, features_for
 from .refs import resolve_args
-
+from .validate import validate_plan
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 _PROMPTS_ROOT = os.path.join(_HERE, "prompts")
 
 DEFAULT_MAX_ITERATIONS = 4
+
+# V4: Retries sind strikt begrenzt und UNABHÄNGIG von max_iterations.
+# Eine Iteration (V2) ist eine geplante Zwischenrunde (done: false).
+# Ein Retry (V4) ist eine ERZWUNGENE Zusatzrunde, weil etwas schiefging.
+DEFAULT_MAX_RETRIES = 2
 
 
 def _prompt_dir() -> str:
     """Aktives Prompt-Verzeichnis (versioniert).
 
-    Wählt prompts/<PROMPT_VERSION>/ (Default: 'v1').
+    Wählt prompts/<active_version()>/ (Default: 'v1'). Die aktive Version
+    kommt aus runner/features.py (AGENT_VERSION, sonst PROMPT_VERSION).
+
     Fällt zurück auf prompts/ selbst, wenn es dort .txt-Dateien gibt
     (Rückwärtskompatibilität).
     """
-    version = (os.getenv("PROMPT_VERSION") or "v1").strip()
+    version = active_version()
     versioned = os.path.join(_PROMPTS_ROOT, version)
     if os.path.isdir(versioned):
         return versioned
@@ -53,6 +62,7 @@ def _prompt_dir() -> str:
 # ---------------------------------------------------------
 # Prompt zusammenbauen
 # ---------------------------------------------------------
+
 def build_system_prompt() -> str:
     pdir = _prompt_dir()
     with open(os.path.join(pdir, "system_prompt.txt"), encoding="utf-8") as f:
@@ -116,6 +126,12 @@ def _summarize(result: Any) -> str:
 def execute_step(step: Dict[str, Any], results: List[Any]) -> Any:
     tool = TOOLS.get(step.get("tool"))
     if not tool:
+        # Unbekanntes Tool (z. B. "__validation_error__" aus runner/validate.py):
+        # die description enthält dann den konkreten Validierungsgrund und
+        # muss sichtbar bleiben statt eines generischen "unknown tool".
+        desc = step.get("description")
+        if desc:
+            return {"error": f"unknown tool '{step.get('tool')}': {desc}"}
         return {"error": f"unknown tool '{step.get('tool')}'"}
 
     args = resolve_args(step.get("args", {}) or {}, results)
@@ -133,6 +149,7 @@ def process_steps(steps: List[Dict[str, Any]],
     """Führt alle Steps EINES Plans der Reihe nach aus.
 
     existing_results: bereits vorhandene Ergebnisse früherer Runden.
+
     Neue Steps werden GEGEN DIESE LISTE aufgelöst und ANGEHÄNGT — die
     Indizierung von $results[i] bleibt über Runden hinweg stabil.
 
@@ -159,6 +176,78 @@ def process_steps(steps: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------
+# V3: Strukturelle Verifikation (schaltbar über features["validate"])
+# ---------------------------------------------------------
+def _validate_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Prüft die Steps eines Plans VOR der Ausführung (runner/validate.py).
+
+    Ungültige Steps werden NICHT ausgeführt, sondern durch ein
+    "__validation_error__"-Ergebnis ersetzt, damit $results[i] konsistent
+    indiziert bleibt und der Fehler SICHTBAR im Log steht statt einer
+    stillen Falschantwort.
+
+    Ist die Verifikation deaktiviert (features["validate"] == False, z. B.
+    V1/V2), wird die Liste unverändert zurückgegeben.
+    """
+    if not features_for(active_version())["validate"]:
+        return steps
+
+    problems = validate_plan(steps)
+    if not problems:
+        return steps
+
+    print("WARN: Plan enthält ungültige Steps (werden NICHT ausgeführt):")
+    for idx, errs in problems.items():
+        for e in errs:
+            print(f"  Step {idx}: {e}")
+
+    fixed_steps = []
+    for i, step in enumerate(steps):
+        if i in problems:
+            fixed_steps.append({
+                "tool": "__validation_error__",
+                "args": {},
+                "description": "; ".join(problems[i]),
+            })
+        else:
+            fixed_steps.append(step)
+    return fixed_steps
+
+
+# ---------------------------------------------------------
+# V4: Fehler erkennen und als Retry-Feedback zurückspielen
+# ---------------------------------------------------------
+def _find_step_errors(results: List[Any], start_index: int) -> List[tuple]:
+    """Gibt (index, fehlermeldung) für alle results ab start_index zurück,
+    die einen 'error'-Schlüssel enthalten — also sowohl echte
+    Tool-Laufzeitfehler als auch V3-Validierungsfehler (die technisch
+    genauso als {"error": ...} im Ergebnis landen)."""
+    errors: List[tuple] = []
+    for i in range(start_index, len(results)):
+        r = results[i]
+        if isinstance(r, dict) and "error" in r:
+            errors.append((i, r["error"]))
+    return errors
+
+
+def _render_error_feedback(errors: List[tuple]) -> str:
+    """Baut den Text, der dem Modell in der Retry-Runde als Kontext
+    mitgegeben wird: welche Steps fehlgeschlagen sind und wie es sie
+    korrigieren soll."""
+    lines = ["ACHTUNG: Die folgenden Steps aus deinem letzten Plan sind "
+             "fehlgeschlagen:"]
+    for idx, msg in errors:
+        lines.append(f"  Step {idx}: {msg}")
+    lines.append(
+        "Korrigiere NUR die betroffenen Steps in deinem nächsten Plan "
+        "(z. B. richtige Kategorie, richtiger Operator, richtiger Typ). "
+        "Wiederhole NICHT die bereits erfolgreichen Steps -- referenziere "
+        "sie stattdessen per $results[i]."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------
 # Bisherige Ergebnisse als Text für den nächsten LLM-Aufruf
 # ---------------------------------------------------------
 def _render_results_block(results: List[Any]) -> str:
@@ -167,12 +256,14 @@ def _render_results_block(results: List[Any]) -> str:
     Runde der jeweilige Step lief."""
     if not results:
         return ""
+
     lines = [
         "Bisherige Ergebnisse (results) — bereits ausgeführt, "
         "NICHT wiederholen, per $results[i] referenzieren:"
     ]
     for i, r in enumerate(results):
         lines.append(f"$results[{i}] = {json.dumps(r, ensure_ascii=False, default=str)}")
+
     return "\n".join(lines)
 
 
@@ -193,7 +284,8 @@ def _write_agent_log(plans: List[Dict[str, Any]], results: List[Any]) -> None:
 # Haupt-Loop (iterationsfähig)
 # ---------------------------------------------------------
 def run_agent(user_question: str,
-              max_iterations: int = DEFAULT_MAX_ITERATIONS) -> Dict[str, Any]:
+              max_iterations: int = DEFAULT_MAX_ITERATIONS,
+              max_retries: int = DEFAULT_MAX_RETRIES) -> Dict[str, Any]:
     """Führt den Shop-Controller für EINE Frage aus.
 
     Der Loop fährt mehrere Runden, bis der Plan "done": true setzt (oder das
@@ -204,13 +296,21 @@ def run_agent(user_question: str,
     V2 (Prompt mit "done"-Feld) kann über mehrere Runden echte
     Zwischenergebnisse abwarten, bevor es eine bedingte Entscheidung trifft.
 
+    V4 (Retry): Schlägt ein Step fehl (V3-Validierungsfehler ODER echter
+    Tool-Laufzeitfehler), wird der Fehler als Text an das Modell
+    zurückgegeben und es bekommt max_retries Versuche, den Step zu
+    korrigieren. Retries sind strikt begrenzt und UNABHÄNGIG von
+    max_iterations.
+
     Args:
         user_question: Die betriebswirtschaftliche Frage an den Shop-Controller.
         max_iterations: Sicherheitsnetz gegen Endlosschleifen (Default 4).
+        max_retries: Max. erzwungene Korrektur-Runden bei fehlgeschlagenen
+            Steps (Default 2).
 
     Returns:
-        Dict mit "plan" (letzter Plan), "plans" (alle Pläne), "results" und
-        "answer" (aus dem letzten Plan, falls vorhanden).
+        Dict mit "plan" (letzter Plan), "plans" (alle Pläne), "results",
+        "answer" (aus dem letzten Plan, falls vorhanden) und "retries_used".
     """
     system_prompt = build_system_prompt()
 
@@ -218,15 +318,22 @@ def run_agent(user_question: str,
     all_plans: List[Dict[str, Any]] = []
     done = False
     iteration = 0
+    retries_used = 0
+    pending_error_feedback: Optional[str] = None
 
     while not done and iteration < max_iterations:
         iteration += 1
-        print(f"\n=== Runde {iteration} ===")
 
         user_prompt = f"Frage: {user_question}"
         results_block = _render_results_block(all_results)
         if results_block:
             user_prompt += f"\n\n{results_block}"
+        if pending_error_feedback:
+            print(f"\n=== Runde {iteration} (Retry {retries_used}/{max_retries}) ===")
+            user_prompt += f"\n\n{pending_error_feedback}"
+            pending_error_feedback = None  # nur einmal einspeisen
+        else:
+            print(f"\n=== Runde {iteration} ===")
 
         raw_plan = call_llm(system_prompt, user_prompt)
         if not isinstance(raw_plan, dict):
@@ -241,14 +348,44 @@ def run_agent(user_question: str,
         print("Plan:",
               json.dumps(plan, ensure_ascii=True, indent=2, default=str))
 
+        before_count = len(all_results)
+
         if "error" not in plan:
             steps = plan.get("steps") or []
             if not steps:
                 print("WARN: Modell lieferte keine ausführbaren Steps.")
+
+            # V3: Strukturelle Verifikation VOR der Ausführung. Ob sie greift,
+            # hängt von features["validate"] der aktiven Version ab (V1/V2:
+            # aus, V3: an). Ungültige Steps werden NICHT ausgeführt, sondern
+            # durch ein "__validation_error__"-Ergebnis ersetzt, damit
+            # $results[i] konsistent indiziert bleibt und der Fehler SICHTBAR
+            # im Log steht statt einer stillen Falschantwort.
+            steps = _validate_steps(steps)
+
             all_results = process_steps(steps, existing_results=all_results)
 
         # done: Fehlt das Feld, gilt die Runde als abgeschlossen (V1-Kompatibilität).
         done = bool(plan.get("done", True))
+
+        # V4: Fehlgeschlagene Steps (V3-Validierungsfehler ODER echte
+        # Tool-Laufzeitfehler) erzwingen eine Korrektur-Runde — unabhängig
+        # davon, was das Modell selbst in "done" geschrieben hat. Retries
+        # sind strikt begrenzt (max_retries), damit keine Endlosschleife
+        # entsteht, wenn das Modell denselben Fehler wiederholt macht.
+        step_errors = _find_step_errors(all_results, before_count)
+        if step_errors and retries_used < max_retries:
+            retries_used += 1
+            print(f"WARN: {len(step_errors)} Step(s) fehlgeschlagen -- "
+                  f"erzwinge Retry {retries_used}/{max_retries}.")
+            done = False  # überschreibt, was das Modell selbst gesagt hat
+            pending_error_feedback = _render_error_feedback(step_errors)
+        elif step_errors:
+            print(f"WARN: Fehlgeschlagene Steps, aber max_retries "
+                  f"({max_retries}) erreicht -- gebe auf, keine weitere "
+                  f"Korrektur.")
+            # done bleibt, wie vom Modell gesetzt (i. d. R. True) --
+            # der Loop endet HIER bewusst, statt endlos weiterzuversuchen.
 
     if iteration >= max_iterations and not done:
         print(f"WARN: max_iterations ({max_iterations}) erreicht, "
@@ -262,4 +399,9 @@ def run_agent(user_question: str,
         "plans": all_plans,
         "results": all_results,
         "answer": last_plan.get("answer", ""),
+        "retries_used": retries_used,
     }
+
+
+
+

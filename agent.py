@@ -23,11 +23,16 @@ def main() -> None:
                    help="LLM-Modell (überschreibt die Provider-Env-Variable).")
     p.add_argument("--prompt-version", type=str, default=None,
                    help="prompts/<version>/ (überschreibt PROMPT_VERSION).")
+    p.add_argument("--agent-version", type=str, default=None,
+                   help="Aktive Agent-Version (v1|v2|v3, siehe runner/features.py). "
+                        "Überschreibt AGENT_VERSION und PROMPT_VERSION.")
     args = p.parse_args()
 
     if args.model:
         set_model(args.model)
-    if args.prompt_version:
+    if args.agent_version:
+        os.environ["AGENT_VERSION"] = args.agent_version
+    elif args.prompt_version:
         os.environ["PROMPT_VERSION"] = args.prompt_version
 
     result = run_agent(args.question)
@@ -37,3 +42,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
